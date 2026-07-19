@@ -162,7 +162,7 @@ if st.button(
         scheduling_roster_path = (
             APP_ROOT
             / "reference"
-            / "Scheduling_Roster_2026.xlsx"
+            / "Scheduling Roster 2026.xlsx"
         )
 
         request = GenerationRequest(
