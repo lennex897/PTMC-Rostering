@@ -94,6 +94,7 @@ class ScoringContext:
     schedule: Schedule
     selected_departments: frozenset[str] = frozenset()
     maximum_weekly_overnights: int = 3
+    is_overnight: bool | None = None
 
     role_priorities: tuple[RolePriority, ...] = (
         DEFAULT_ROLE_PRIORITIES
@@ -277,7 +278,13 @@ def score_candidate(
             value=5.0,
         )
 
-    if is_overnight_role(role):
+    overnight_duty = (
+        context.is_overnight
+        if context.is_overnight is not None
+        else is_overnight_role(role)
+    )
+
+    if overnight_duty:
         previous_overnight = (
             last_overnight_before(
                 person=person,
