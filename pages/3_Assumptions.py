@@ -1,40 +1,50 @@
-from pathlib import Path
-
 import streamlit as st
 
-
-APP_ROOT = Path(__file__).resolve().parents[1]
-ASSUMPTIONS_PATH = APP_ROOT / "config" / "assumptions.md"
+from roster_engine.documents import (
+    get_current_document,
+    save_document,
+)
 
 
 st.set_page_config(
     page_title="Assumptions",
-    page_icon="📝",
+    page_icon="📘",
     layout="wide",
 )
 
-st.title("Assumptions")
+st.title("Rulebook")
 
-if not ASSUMPTIONS_PATH.exists():
-    st.error("The assumptions file could not be found.")
-    st.stop()
+current = get_current_document("assumptions")
 
-assumptions = ASSUMPTIONS_PATH.read_text(encoding="utf-8")
-
-edited_assumptions = st.text_area(
-    "Assumptions Markdown",
-    value=assumptions,
+edited = st.text_area(
+    f"Rulebook Markdown — Version {current.version}",
+    value=current.content,
     height=650,
 )
 
-st.caption(
-    "Saving to permanent storage will be enabled after Supabase is connected."
-)
-
-preview, raw = st.tabs(["Preview", "Raw Markdown"])
+preview, history = st.tabs(["Preview", "Save"])
 
 with preview:
-    st.markdown(edited_assumptions)
+    st.markdown(edited)
 
-with raw:
-    st.code(edited_assumptions, language="markdown")
+with history:
+    st.warning(
+        "Saving creates a new version and retains the previous version."
+    )
+
+    if st.button("Save new assumptions version", type="primary"):
+        if not edited.strip():
+            st.error("The assumptions cannot be empty.")
+        elif edited == current.content:
+            st.info("No changes were detected.")
+        else:
+            saved = save_document(
+                document_type="assumptions",
+                content=edited,
+            )
+
+            st.success(
+                f"Rulebook version {saved.version} saved."
+            )
+
+            st.rerun()
