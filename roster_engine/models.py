@@ -44,22 +44,69 @@ class Assignment:
     is_overnight: bool
 
 
+@dataclass(frozen=True)
+class RolePriority:
+    """
+    A configurable score adjustment for one person and one role.
+
+    Positive adjustment:
+        Higher priority for the role.
+
+    Negative adjustment:
+        Lower priority for the role.
+
+    effective_from and effective_until are optional and inclusive.
+    """
+
+    person_name: str
+    role: str
+    adjustment: float
+    reason: str = ""
+    is_active: bool = True
+    effective_from: date | None = None
+    effective_until: date | None = None
+
+    def applies_on(self, duty_date: date) -> bool:
+        if not self.is_active:
+            return False
+
+        if (
+            self.effective_from is not None
+            and duty_date < self.effective_from
+        ):
+            return False
+
+        if (
+            self.effective_until is not None
+            and duty_date > self.effective_until
+        ):
+            return False
+
+        return True
+
+
 @dataclass
 class Schedule:
     assignments: list[Assignment] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
-    def add_assignment(self, assignment: Assignment) -> None:
+    def add_assignment(
+        self,
+        assignment: Assignment,
+    ) -> None:
         self.assignments.append(assignment)
 
     def assignments_for_person(
         self,
         person_name: str,
     ) -> list[Assignment]:
+        normalised_name = person_name.strip().upper()
+
         return [
             assignment
             for assignment in self.assignments
-            if assignment.person_name == person_name
+            if assignment.person_name.strip().upper()
+            == normalised_name
         ]
 
     def assignments_for_date(
@@ -78,6 +125,7 @@ class Schedule:
     ) -> float:
         return sum(
             assignment.points
-            for assignment in self.assignments
-            if assignment.person_name == person_name
+            for assignment in self.assignments_for_person(
+                person_name
+            )
         )
