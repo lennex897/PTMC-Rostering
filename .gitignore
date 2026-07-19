@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Environment files
+.env
+.env.*
+
+# Uploaded and generated files
+uploads/
+outputs/
+temp/
+*.tmp
+
+# Real operational workbooks
+Leave_Off_Impt*
+*Generated_Roster*
+*Mock_Roster*
+
+# macOS
+.DS_Store
