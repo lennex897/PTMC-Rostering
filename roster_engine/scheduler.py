@@ -15,6 +15,7 @@ from roster_engine.models import (
 )
 from roster_engine.scoring import (
     CandidateScore,
+    DEFAULT_ROLE_PRIORITIES,
     ScoringContext,
     rank_candidates,
 )
@@ -115,7 +116,7 @@ def generate_schedule(
     requirements: list[DutyRequirement],
     availability_entries: list[AvailabilityEntry],
     historical_schedule: Schedule | None = None,
-    role_priorities: tuple[RolePriority, ...] = (),
+    role_priorities: tuple[RolePriority, ...] | None = None,
     maximum_weekly_overnights: int = 3,
 ) -> SchedulerResult:
     """
@@ -125,7 +126,9 @@ def generate_schedule(
     personnel, ranks them, and selects the highest-ranked available
     candidate.
     """
-
+    if role_priorities is None:
+        role_priorities = DEFAULT_ROLE_PRIORITIES
+        
     schedule = Schedule()
 
     if historical_schedule is not None:
