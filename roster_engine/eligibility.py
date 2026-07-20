@@ -50,16 +50,32 @@ def allowed_roles_for_person(
     if not person.is_ampt_valid:
         return set()
 
-    if person.centre == "PT":
-        if person.is_bcf:
-            return set(BCF_ROLES)
+    centre = person.centre.strip().upper()
 
-        return set(PT_ROLES)
+    configured_roles = {
+        normalise_role(role)
+        for role in person.eligible_roles
+    }
 
-    if person.centre == "RH":
-        return set(RH_ROLES)
+    if centre == "PT":
+        permitted_roles = (
+            BCF_ROLES
+            if person.is_bcf
+            else PT_ROLES
+        )
 
-    return set()
+    elif centre == "RH":
+        permitted_roles = RH_ROLES
+
+    else:
+        return set()
+
+    if configured_roles:
+        return configured_roles & permitted_roles
+
+    # Temporary fallback for personnel not yet loaded
+    # with explicit eligible_roles.
+    return set(permitted_roles)
 
 
 def is_person_unavailable(

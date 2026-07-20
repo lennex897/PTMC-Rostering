@@ -12,6 +12,7 @@ class Person:
     is_bcf: bool = False
     leaving_date: date | None = None
     eligible_roles: set[str] = field(default_factory=set)
+    is_active: bool = True
 
     @property
     def is_ampt_valid(self) -> bool:

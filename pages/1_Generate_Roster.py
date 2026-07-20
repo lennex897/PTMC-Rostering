@@ -16,6 +16,8 @@ from roster_engine.personnel import load_personnel
 
 from roster_engine.validator import validate_schedule
 
+from roster_engine.requirements import RequirementSettings
+
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 
