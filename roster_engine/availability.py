@@ -11,6 +11,8 @@ from roster_engine.models import AvailabilityEntry
 from roster_engine.personnel import normalise_text
 
 
+
+
 BLOCKING_PRIORITY = (
     "AL",
     "ORD",

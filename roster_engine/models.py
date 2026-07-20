@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,34 @@ class AvailabilityEntry:
     unavailable_date: date
     reason: str
 
+@dataclass(frozen=True)
+class RosterMonth:
+    id: str
+    month_start: date
+    status: str
+    source_filename: str | None = None
+    imported_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class StoredAvailabilityEntry:
+    id: str
+    roster_month_id: str
+    personnel_id: str
+    person_name: str
+    rank: str
+    centre: str
+    unavailable_date: date
+    reason: str
+    source: str = "workbook"
+    notes: str | None = None
+
+    def to_availability_entry(self) -> AvailabilityEntry:
+        return AvailabilityEntry(
+            person_name=self.person_name,
+            unavailable_date=self.unavailable_date,
+            reason=self.reason,
+        )
 
 @dataclass(frozen=True)
 class DutyRequirement:
