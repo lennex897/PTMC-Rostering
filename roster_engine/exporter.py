@@ -217,17 +217,65 @@ def export_schedule(
                 column=column_number,
             )
 
-            if target_cell.value not in (None, ""):
+            new_value = assignment_cell_value(assignment)
+
+            existing_value = (
+                str(target_cell.value).strip()
+                if target_cell.value not in (None, "")
+                else ""
+            )
+
+            # Existing roster duty codes may be replaced by the newly generated
+            # assignment. Availability and leave codes remain protected.
+            replaceable_duty_codes = {
+                "DM",
+                "CS1",
+                "CS2",
+                "CS/B",
+                "SB1",
+                "SB2",
+                "AE",
+                "EM",
+                "OUTFIELD RESERVE",
+            }
+
+            protected_availability_codes = {
+                "AL",
+                "ORD",
+                "HL",
+                "MC",
+                "CCL",
+                "OIL",
+                "OFF",
+                "MA",
+                "AM",
+                "PM",
+            }
+
+            normalised_existing = existing_value.upper()
+
+            if normalised_existing in protected_availability_codes:
                 raise ValueError(
-                    "Cannot overwrite an existing roster entry: "
+                    "Cannot assign duty over an availability entry: "
                     f"{assignment.person_name}, "
                     f"{assignment.duty_date.isoformat()}, "
-                    f"existing value={target_cell.value!r}"
+                    f"existing value={existing_value!r}, "
+                    f"new value={new_value!r}"
                 )
 
-            target_cell.value = assignment_cell_value(
-                assignment
-            )
+            if (
+                existing_value
+                and normalised_existing not in replaceable_duty_codes
+            ):
+                raise ValueError(
+                    "Cannot safely overwrite an unrecognised roster entry: "
+                    f"{assignment.person_name}, "
+                    f"{assignment.duty_date.isoformat()}, "
+                    f"existing value={existing_value!r}, "
+                    f"new value={new_value!r}"
+                )
+
+            target_cell.value = new_value
 
             written_assignments += 1
 
