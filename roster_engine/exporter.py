@@ -1,395 +1,268 @@
 from __future__ import annotations
 
-import shutil
-from dataclasses import dataclass, field
-from datetime import date, datetime
+from copy import copy
+from datetime import date
 from pathlib import Path
 
 import openpyxl
+from openpyxl.worksheet.worksheet import Worksheet
 
-from roster_engine.models import Assignment
+from roster_engine.models import Assignment, Schedule
 from roster_engine.personnel import normalise_text
-
-import calendar
-from datetime import date, datetime
-
-
-EVENT_ROW = 2
-DATE_ROW = 3
-DAY_ROW = 4
-
-PERSONNEL_START_ROW = 5
-PERSONNEL_COLUMN = 2
-SCHEDULE_START_COLUMN = 3
+from roster_engine.roster_grid import (
+    DATE_ROW,
+    PERSONNEL_COLUMN,
+    PERSONNEL_START_ROW,
+    SCHEDULE_START_COLUMN,
+    normalise_date,
+)
 
 
-DUTY_CODES = {
-    "DM",
-    "CS1",
-    "CS2",
-    "CS/B",
-    "SB1",
-    "SB2",
-    "AE",
-}
-
-
-@dataclass
-class ExportReport:
-    output_path: Path
-    written_assignments: int = 0
-    missing_people: list[str] = field(
-        default_factory=list
-    )
-    missing_dates: list[date] = field(
-        default_factory=list
-    )
-    skipped_assignments: list[Assignment] = field(
-        default_factory=list
-    )
-    cleared_cells: int = 0
-
-    @property
-    def successful(self) -> bool:
-        return (
-            not self.missing_people
-            and not self.missing_dates
-            and not self.skipped_assignments
-        )
-
-
-def parse_roster_date(value: object) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-
-    if isinstance(value, date):
-        return value
-
-    return None
-
-
-def assignment_code(role: str) -> str:
+def roster_worksheet_name(year: int, month: int) -> str:
     """
-    Convert a centre-prefixed role such as 'PT DM' or 'RH SB1'
-    into the value written into the roster grid.
+    Return the expected roster worksheet name.
+
+    Example:
+        August 2026 -> Aug-2026 Roster
     """
-    normalised_role = normalise_text(role)
-
-    for centre_prefix in ("PT ", "RH "):
-        if normalised_role.startswith(centre_prefix):
-            return normalised_role[
-                len(centre_prefix):
-            ]
-
-    return normalised_role
+    return date(year, month, 1).strftime("%b-%Y Roster")
 
 
-def configure_month_header(
-    worksheet,
-    target_year: int,
-    target_month: int,
+def assignment_cell_value(assignment: Assignment) -> str:
+    """
+    Convert an internal role name into the value written into the roster.
+
+    Examples:
+        PT DM  -> DM
+        RH SB1 -> SB1
+        PT CS/B -> CS/B
+    """
+    role = assignment.role.strip()
+
+    for prefix in ("PT ", "RH "):
+        if role.upper().startswith(prefix):
+            return role[len(prefix):].strip()
+
+    return role
+
+
+def find_date_columns(
+    worksheet: Worksheet,
+    *,
+    year: int,
+    month: int,
 ) -> dict[date, int]:
     """
-    Configure the roster calendar so column C is the first day of
-    the target month and subsequent columns contain consecutive days.
-
-    Returns the date-to-column mapping without relying on Excel to
-    calculate formulas.
+    Map each calendar date in the target month to its worksheet column.
     """
-    days_in_month = calendar.monthrange(
-        target_year,
-        target_month,
-    )[1]
-
     date_columns: dict[date, int] = {}
 
-    for day_number in range(1, 32):
-        column_number = (
-            SCHEDULE_START_COLUMN
-            + day_number
-            - 1
+    for column_number in range(
+        SCHEDULE_START_COLUMN,
+        worksheet.max_column + 1,
+    ):
+        cell_date = normalise_date(
+            worksheet.cell(
+                row=DATE_ROW,
+                column=column_number,
+            ).value
         )
 
-        date_cell = worksheet.cell(
-            row=DATE_ROW,
-            column=column_number,
-        )
+        if cell_date is None:
+            continue
 
-        if day_number <= days_in_month:
-            roster_date = date(
-                target_year,
-                target_month,
-                day_number,
-            )
-
-            date_columns[roster_date] = column_number
-
-            if day_number == 1:
-                # Store an actual Excel date in the first cell.
-                date_cell.value = datetime(
-                    target_year,
-                    target_month,
-                    1,
-                )
-            else:
-                previous_cell = worksheet.cell(
-                    row=DATE_ROW,
-                    column=column_number - 1,
-                )
-
-                date_cell.value = (
-                    f"={previous_cell.coordinate}+1"
-                )
-        else:
-            # For February, April, June, September and November,
-            # clear unused calendar columns.
-            date_cell.value = None
+        if (
+            cell_date.year == year
+            and cell_date.month == month
+        ):
+            date_columns[cell_date] = column_number
 
     return date_columns
 
 
-def find_date_columns(
-    worksheet,
-    target_year: int,
-    target_month: int,
-) -> dict[date, int]:
-    """
-    Return calendar columns for the requested month.
-
-    The roster template always starts its calendar in column C, so
-    formula evaluation is not required.
-    """
-    return configure_month_header(
-        worksheet=worksheet,
-        target_year=target_year,
-        target_month=target_month,
-    )
-
-
-def find_person_rows(
-    worksheet,
-    valid_person_names: set[str] | None = None,
+def find_personnel_rows(
+    worksheet: Worksheet,
 ) -> dict[str, int]:
     """
-    Locate personnel rows in column B.
-
-    When valid_person_names is supplied, summary rows such as DM,
-    CS1 and RESERVE are automatically ignored.
+    Map normalised personnel names to worksheet row numbers.
     """
-    person_rows: dict[str, int] = {}
-
-    normalised_valid_names = None
-
-    if valid_person_names is not None:
-        normalised_valid_names = {
-            normalise_text(name)
-            for name in valid_person_names
-        }
+    personnel_rows: dict[str, int] = {}
 
     for row_number in range(
         PERSONNEL_START_ROW,
         worksheet.max_row + 1,
     ):
-        name = normalise_text(
-            worksheet.cell(
-                row=row_number,
-                column=PERSONNEL_COLUMN,
-            ).value
-        )
+        raw_name = worksheet.cell(
+            row=row_number,
+            column=PERSONNEL_COLUMN,
+        ).value
 
-        if not name:
+        normalised_name = normalise_text(raw_name)
+
+        if not normalised_name:
             continue
 
-        if (
-            normalised_valid_names is not None
-            and name not in normalised_valid_names
-        ):
-            continue
+        personnel_rows[normalised_name] = row_number
 
-        person_rows[name] = row_number
-
-    return person_rows
+    return personnel_rows
 
 
-def clear_generated_duties(
-    worksheet,
-    person_rows: dict[str, int],
-    date_columns: dict[date, int],
-) -> int:
+def copy_cell_style(
+    source_cell,
+    target_cell,
+) -> None:
     """
-    Clear only recognised duty codes from the target roster grid.
+    Copy formatting from one roster cell to another.
 
-    Leave, reserve, deployment and other non-duty values are
-    preserved.
+    This is useful when a blank template cell has lost formatting.
     """
-    cleared_cells = 0
+    if source_cell.has_style:
+        target_cell._style = copy(source_cell._style)
 
-    for row_number in person_rows.values():
-        for column_number in date_columns.values():
-            cell = worksheet.cell(
-                row=row_number,
-                column=column_number,
-            )
+    if source_cell.number_format:
+        target_cell.number_format = source_cell.number_format
 
-            existing_value = normalise_text(cell.value)
+    if source_cell.alignment:
+        target_cell.alignment = copy(source_cell.alignment)
 
-            if existing_value in DUTY_CODES:
-                cell.value = None
-                cleared_cells += 1
-
-    return cleared_cells
+    if source_cell.protection:
+        target_cell.protection = copy(source_cell.protection)
 
 
-def export_assignments_to_workbook(
-    template_workbook_path: Path,
-    output_workbook_path: Path,
-    worksheet_name: str,
-    assignments: list[Assignment],
-    target_year: int,
-    target_month: int,
-    valid_person_names: set[str] | None = None,
-    clear_existing_duties: bool = True,
-) -> ExportReport:
+def export_schedule(
+    *,
+    template_path: Path,
+    output_path: Path,
+    schedule: Schedule,
+    year: int,
+    month: int,
+    worksheet_name: str | None = None,
+) -> Path:
     """
-    Copy the source workbook and write generated assignments into
-    the selected roster worksheet.
+    Write generated assignments into a copy of the roster workbook.
 
-    The original workbook is never modified.
+    The original workbook is not modified.
     """
-    if not template_workbook_path.exists():
+    if not template_path.exists():
         raise FileNotFoundError(
-            "Scheduling workbook not found: "
-            f"{template_workbook_path}"
+            f"Roster template was not found: {template_path}"
         )
 
-    output_workbook_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    selected_worksheet = (
+        worksheet_name
+        or roster_worksheet_name(year, month)
     )
 
-    shutil.copy2(
-        template_workbook_path,
-        output_workbook_path,
-    )
-
-    workbook = openpyxl.load_workbook(
-        output_workbook_path,
-        data_only=False,
-    )
+    workbook = openpyxl.load_workbook(template_path)
 
     try:
-        if worksheet_name not in workbook.sheetnames:
+        if selected_worksheet not in workbook.sheetnames:
             raise ValueError(
-                f"Worksheet '{worksheet_name}' was not found."
+                f"Worksheet '{selected_worksheet}' was not found. "
+                f"Available worksheets: {workbook.sheetnames}"
             )
 
-        worksheet = workbook[worksheet_name]
+        worksheet = workbook[selected_worksheet]
 
         date_columns = find_date_columns(
-            worksheet=worksheet,
-            target_year=target_year,
-            target_month=target_month,
+            worksheet,
+            year=year,
+            month=month,
         )
 
         if not date_columns:
             raise ValueError(
-                "No matching date columns were found in "
-                f"worksheet '{worksheet_name}' for "
-                f"{target_year}-{target_month:02d}."
+                f"No dates for {year}-{month:02d} were found "
+                f"in worksheet '{selected_worksheet}'."
             )
 
-        person_rows = find_person_rows(
-            worksheet=worksheet,
-            valid_person_names=valid_person_names,
-        )
+        personnel_rows = find_personnel_rows(worksheet)
 
-        report = ExportReport(
-            output_path=output_workbook_path,
-        )
-
-        if clear_existing_duties:
-            report.cleared_cells = (
-                clear_generated_duties(
-                    worksheet=worksheet,
-                    person_rows=person_rows,
-                    date_columns=date_columns,
-                )
+        if not personnel_rows:
+            raise ValueError(
+                f"No personnel rows were found in "
+                f"worksheet '{selected_worksheet}'."
             )
 
         missing_people: set[str] = set()
         missing_dates: set[date] = set()
+        written_assignments = 0
 
-        for assignment in assignments:
+        for assignment in schedule.assignments:
             if (
-                assignment.duty_date.year
-                != target_year
-                or assignment.duty_date.month
-                != target_month
+                assignment.duty_date.year != year
+                or assignment.duty_date.month != month
             ):
-                report.skipped_assignments.append(
-                    assignment
-                )
                 continue
 
             normalised_name = normalise_text(
                 assignment.person_name
             )
 
-            row_number = person_rows.get(
-                normalised_name
-            )
-
+            row_number = personnel_rows.get(normalised_name)
             column_number = date_columns.get(
                 assignment.duty_date
             )
 
             if row_number is None:
-                missing_people.add(
-                    assignment.person_name
-                )
-                report.skipped_assignments.append(
-                    assignment
-                )
+                missing_people.add(assignment.person_name)
                 continue
 
             if column_number is None:
-                missing_dates.add(
-                    assignment.duty_date
-                )
-                report.skipped_assignments.append(
-                    assignment
-                )
+                missing_dates.add(assignment.duty_date)
                 continue
 
-            duty_code = assignment_code(
-                assignment.role
-            )
-
-            if duty_code not in DUTY_CODES:
-                report.skipped_assignments.append(
-                    assignment
-                )
-                continue
-
-            worksheet.cell(
+            target_cell = worksheet.cell(
                 row=row_number,
                 column=column_number,
-            ).value = duty_code
+            )
 
-            report.written_assignments += 1
+            if target_cell.value not in (None, ""):
+                raise ValueError(
+                    "Cannot overwrite an existing roster entry: "
+                    f"{assignment.person_name}, "
+                    f"{assignment.duty_date.isoformat()}, "
+                    f"existing value={target_cell.value!r}"
+                )
 
-        report.missing_people = sorted(
-            missing_people
+            target_cell.value = assignment_cell_value(
+                assignment
+            )
+
+            written_assignments += 1
+
+        if missing_people:
+            missing_names = ", ".join(
+                sorted(missing_people)
+            )
+            raise ValueError(
+                "Some assigned personnel could not be found "
+                f"in the roster worksheet: {missing_names}"
+            )
+
+        if missing_dates:
+            missing_date_text = ", ".join(
+                roster_date.isoformat()
+                for roster_date in sorted(missing_dates)
+            )
+            raise ValueError(
+                "Some assignment dates could not be found "
+                f"in the roster worksheet: {missing_date_text}"
+            )
+
+        if written_assignments == 0:
+            raise ValueError(
+                "No assignments were written to the roster."
+            )
+
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
         )
-        report.missing_dates = sorted(
-            missing_dates
-        )
-        workbook.calculation.fullCalcOnLoad = True
-        workbook.calculation.forceFullCalc = True
-        workbook.calculation.calcMode = "auto"
-        workbook.save(output_workbook_path)
 
-        return report
+        workbook.save(output_path)
 
     finally:
         workbook.close()
+
+    return output_path

@@ -5,8 +5,9 @@ from tempfile import TemporaryDirectory
 import openpyxl
 import streamlit as st
 
-from roster_engine.documents import get_current_document
 from roster_engine.availability import load_availability
+from roster_engine.documents import get_current_document
+from roster_engine.exporter import export_schedule
 from roster_engine.generator import (
     GenerationSettings,
     generate_roster,
@@ -49,12 +50,10 @@ if uploaded_leave is not None:
 
         sheet_names = workbook.sheetnames
 
-        # Example expected value:
-        # July 2026 becomes "Jul 26".
+        # Example:
+        # August 2026 becomes "Aug 26".
         expected_sheet = selected_month.strftime("%b %y")
 
-        # Keep only worksheet names that look like month sheets.
-        # strip() also handles accidental leading/trailing spaces.
         valid_month_names = {
             date(2000, month_number, 1).strftime("%b")
             for month_number in range(1, 13)
@@ -77,11 +76,11 @@ if uploaded_leave is not None:
         if not valid_sheets:
             st.error(
                 "No monthly worksheets were found. "
-                "Expected worksheet names such as 'Jul 26' or 'Aug 26'."
+                "Expected worksheet names such as "
+                "'Jul 26' or 'Aug 26'."
             )
+
         else:
-            # Match using stripped names while preserving the workbook's
-            # original worksheet name.
             matching_sheet = next(
                 (
                     sheet_name
@@ -125,10 +124,12 @@ if uploaded_leave is not None:
 else:
     st.info("Upload a leave workbook to continue.")
 
+
 generate_disabled = (
     uploaded_leave is None
     or selected_sheet is None
 )
+
 
 if st.button(
     "Generate roster",
@@ -146,15 +147,29 @@ if st.button(
     try:
         rulebook = get_current_document("rulebook")
         assumptions = get_current_document("assumptions")
+
     except Exception as exc:
-        st.error(f"Unable to load documents from Supabase: {exc}")
+        st.error(
+            f"Unable to load documents from Supabase: {exc}"
+        )
         st.stop()
 
     with TemporaryDirectory() as temp_directory:
         temp_path = Path(temp_directory)
 
-        leave_path = temp_path / "leave_forecast.xlsx"
-        leave_path.write_bytes(uploaded_leave.getvalue())
+        leave_path = (
+            temp_path
+            / "leave_forecast.xlsx"
+        )
+
+        leave_path.write_bytes(
+            uploaded_leave.getvalue()
+        )
+
+        output_path = (
+            temp_path
+            / f"{selected_month:%B_%Y}_Roster.xlsx"
+        )
 
         scheduling_roster_path = (
             APP_ROOT
@@ -181,8 +196,18 @@ if st.button(
                 ),
             )
 
+            export_schedule(
+                template_path=scheduling_roster_path,
+                output_path=output_path,
+                schedule=result.schedule,
+                year=selected_month.year,
+                month=selected_month.month,
+            )
+
         except Exception as exc:
-            st.error(f"Roster generation failed: {exc}")
+            st.error(
+                f"Roster generation failed: {exc}"
+            )
             st.exception(exc)
             st.stop()
 
@@ -220,7 +245,8 @@ if st.button(
         st.progress(completion_rate)
 
         st.caption(
-            f"Completion rate: {report.completion_rate:.1%}"
+            f"Completion rate: "
+            f"{report.completion_rate:.1%}"
         )
 
         for warning in report.warnings:
@@ -237,7 +263,8 @@ if st.button(
                     "Overnight": requirement.is_overnight,
                     "Points": requirement.points,
                 }
-                for requirement in result.unfilled_requirements
+                for requirement
+                in result.unfilled_requirements
             ]
 
             st.dataframe(
@@ -245,3 +272,16 @@ if st.button(
                 use_container_width=True,
                 hide_index=True,
             )
+
+        output_bytes = output_path.read_bytes()
+
+        st.download_button(
+            label="Download generated roster",
+            data=output_bytes,
+            file_name=output_path.name,
+            mime=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            type="primary",
+        )
