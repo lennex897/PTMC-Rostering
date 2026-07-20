@@ -48,6 +48,19 @@ def role_selector(
     return chosen_roles
 
 
+def render_summary(records: list[Any]) -> None:
+    active = [r for r in records if r.person.is_active]
+    inactive = [r for r in records if not r.person.is_active]
+    pt = [r for r in active if r.person.centre == "PT"]
+    rh = [r for r in active if r.person.centre == "RH"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Active personnel", len(active))
+    c2.metric("PT personnel", len(pt))
+    c3.metric("RH personnel", len(rh))
+    c4.metric("Inactive personnel", len(inactive))
+
+
 def render_add_person_form() -> None:
     with st.expander("Add new personnel", expanded=False):
         st.caption(
@@ -116,52 +129,105 @@ def render_add_person_form() -> None:
                 rerun()
 
 
-def render_active_personnel(records: list[Any]) -> None:
-    st.subheader("Active personnel")
+def record_label(record: Any) -> str:
+    person = record.person
+    rank = person.rank.strip() if person.rank else "No rank"
+    return f"{person.name} · {rank} · {person.centre}"
 
+
+def render_personnel_browser(records: list[Any]) -> None:
     active_records = [r for r in records if r.person.is_active]
+
     if not active_records:
         st.info("No active personnel records found.")
         return
 
-    search_term = st.text_input(
-        "Search active personnel",
-        key="active_person_search",
-    ).strip().lower()
+    st.subheader("Active personnel")
 
-    filtered_records = [
-        r
-        for r in active_records
-        if (
-            not search_term
-            or search_term in r.person.name.lower()
-            or search_term in r.person.rank.lower()
-            or search_term in r.person.centre.lower()
-            or search_term in r.person.department.lower()
+    browser_col, editor_col = st.columns([1, 2.4], gap="large")
+
+    with browser_col:
+        search_term = st.text_input(
+            "Search",
+            placeholder="Name, rank, centre, department...",
+            key="active_person_search",
+        ).strip().lower()
+
+        centre_filter = st.segmented_control(
+            "Centre",
+            options=["All", "PT", "RH"],
+            default="All",
+            key="personnel_centre_filter",
         )
-    ]
 
-    if not filtered_records:
-        st.warning("No active personnel match the search.")
-        return
+        filtered_records = [
+            record
+            for record in active_records
+            if (
+                (centre_filter == "All" or record.person.centre == centre_filter)
+                and (
+                    not search_term
+                    or search_term in record.person.name.lower()
+                    or search_term in record.person.rank.lower()
+                    or search_term in record.person.centre.lower()
+                    or search_term in record.person.department.lower()
+                )
+            )
+        ]
 
-    label_to_record = {
-        f"{r.person.name} ({r.person.centre})": r
-        for r in filtered_records
-    }
+        st.caption(f"{len(filtered_records)} personnel shown")
 
-    selected_label = st.selectbox(
-        "Select personnel to edit",
-        list(label_to_record),
-        key="active_person_selector",
+        if not filtered_records:
+            st.warning("No active personnel match the current filters.")
+            return
+
+        valid_ids = {str(record.id) for record in filtered_records}
+        selected_id = st.session_state.get("selected_personnel_id")
+
+        if selected_id not in valid_ids:
+            selected_id = str(filtered_records[0].id)
+            st.session_state["selected_personnel_id"] = selected_id
+
+        with st.container(height=560, border=True):
+            for record in filtered_records:
+                person = record.person
+                is_selected = str(record.id) == selected_id
+
+                label = (
+                    f"● {person.name}\n"
+                    f"{person.rank or 'No rank'} · {person.centre}"
+                    if is_selected
+                    else (
+                        f"{person.name}\n"
+                        f"{person.rank or 'No rank'} · {person.centre}"
+                    )
+                )
+
+                if st.button(
+                    label,
+                    key=f"select_person_{record.id}",
+                    use_container_width=True,
+                    type="primary" if is_selected else "secondary",
+                ):
+                    st.session_state["selected_personnel_id"] = str(record.id)
+                    rerun()
+
+    selected_record = next(
+        (
+            record
+            for record in filtered_records
+            if str(record.id) == st.session_state["selected_personnel_id"]
+        ),
+        filtered_records[0],
     )
-    render_edit_form(label_to_record[selected_label])
+
+    with editor_col:
+        render_edit_form(selected_record)
 
 
 def render_edit_form(record: Any) -> None:
     person = record.person
 
-    st.markdown("---")
     st.subheader(f"Edit: {person.name}")
     st.caption(
         "Centre and leaving-date controls update immediately. "
@@ -232,48 +298,54 @@ def render_edit_form(record: Any) -> None:
         key_prefix=f"edit_role_{record.id}_{centre}",
     )
 
-    if st.button(
-        "Save changes",
-        type="primary",
-        key=f"save_person_{record.id}",
-    ):
-        try:
-            update_person(
-                personnel_id=record.id,
-                name=name,
-                rank=rank,
-                centre=centre,
-                department=department,
-                ampt_status=ampt_status,
-                is_bcf=is_bcf,
-                leaving_date=leaving_date_value if has_leaving_date else None,
-                display_order=int(display_order),
-                eligible_roles=selected_roles,
-            )
-        except PersonnelRepositoryError as exc:
-            st.error(str(exc))
-        else:
-            st.success(f"{name.strip()} was updated.")
-            rerun()
+    action_left, action_right = st.columns([1, 1])
 
-    st.markdown("#### Status")
-    confirm_deactivate = st.checkbox(
-        "I understand this will remove the person from future roster generation.",
-        key=f"confirm_deactivate_{record.id}",
-    )
+    with action_left:
+        if st.button(
+            "Save changes",
+            type="primary",
+            key=f"save_person_{record.id}",
+            use_container_width=True,
+        ):
+            try:
+                update_person(
+                    personnel_id=record.id,
+                    name=name,
+                    rank=rank,
+                    centre=centre,
+                    department=department,
+                    ampt_status=ampt_status,
+                    is_bcf=is_bcf,
+                    leaving_date=leaving_date_value if has_leaving_date else None,
+                    display_order=int(display_order),
+                    eligible_roles=selected_roles,
+                )
+            except PersonnelRepositoryError as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"{name.strip()} was updated.")
+                rerun()
 
-    if st.button(
-        "Deactivate personnel",
-        disabled=not confirm_deactivate,
-        key=f"deactivate_{record.id}",
-    ):
-        try:
-            deactivate_person(record.id)
-        except PersonnelRepositoryError as exc:
-            st.error(str(exc))
-        else:
-            st.success(f"{person.name} was deactivated.")
-            rerun()
+    with action_right:
+        confirm_deactivate = st.checkbox(
+            "Confirm deactivation",
+            key=f"confirm_deactivate_{record.id}",
+        )
+
+        if st.button(
+            "Deactivate personnel",
+            disabled=not confirm_deactivate,
+            key=f"deactivate_{record.id}",
+            use_container_width=True,
+        ):
+            try:
+                deactivate_person(record.id)
+            except PersonnelRepositoryError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state.pop("selected_personnel_id", None)
+                st.success(f"{person.name} was deactivated.")
+                rerun()
 
 
 def render_inactive_personnel(records: list[Any]) -> None:
@@ -285,29 +357,28 @@ def render_inactive_personnel(records: list[Any]) -> None:
         st.info("No inactive personnel records.")
         return
 
-    for record in inactive_records:
-        person = record.person
-        left, right = st.columns([4, 1])
+    with st.expander(f"View inactive personnel ({len(inactive_records)})"):
+        for record in inactive_records:
+            person = record.person
+            left, right = st.columns([4, 1])
 
-        with left:
-            st.write(
-                f"**{person.name}** — "
-                f"{person.rank or 'No rank'} — "
-                f"{person.centre}"
-            )
+            with left:
+                st.write(
+                    f"**{person.name}** — "
+                    f"{person.rank or 'No rank'} — "
+                    f"{person.centre}"
+                )
 
-        with right:
-            if st.button("Reactivate", key=f"reactivate_{record.id}"):
-                try:
-                    reactivate_person(record.id)
-                except PersonnelRepositoryError as exc:
-                    st.error(str(exc))
-                else:
-                    st.success(f"{person.name} was reactivated.")
-                    rerun()
+            with right:
+                if st.button("Reactivate", key=f"reactivate_{record.id}"):
+                    try:
+                        reactivate_person(record.id)
+                    except PersonnelRepositoryError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success(f"{person.name} was reactivated.")
+                        rerun()
 
-
-render_add_person_form()
 
 try:
     personnel_records = load_personnel_records(include_inactive=True)
@@ -315,5 +386,7 @@ except PersonnelRepositoryError as exc:
     st.error(str(exc))
     st.stop()
 
-render_active_personnel(personnel_records)
+render_summary(personnel_records)
+render_add_person_form()
+render_personnel_browser(personnel_records)
 render_inactive_personnel(personnel_records)
