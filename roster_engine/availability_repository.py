@@ -16,6 +16,46 @@ from roster_engine.personnel import normalise_text
 def _normalise_month_start(value: date) -> date:
     return value.replace(day=1)
 
+RANK_PREFIXES = {
+    "REC",
+    "PTE",
+    "LCP",
+    "CPL",
+    "CFC",
+    "3SG",
+    "2SG",
+    "1SG",
+    "SSG",
+    "MSG",
+    "3WO",
+    "2WO",
+    "1WO",
+    "MWO",
+    "SWO",
+    "ME1",
+    "ME2",
+    "ME3",
+    "ME4",
+    "ME5",
+    "ME6",
+    "ME7",
+    "ME8",
+}
+
+
+def _personnel_name_candidates(value: object) -> list[str]:
+    normalised = normalise_text(value)
+
+    if not normalised:
+        return []
+
+    candidates = [normalised]
+    parts = normalised.split()
+
+    if len(parts) >= 2 and parts[0] in RANK_PREFIXES:
+        candidates.append(" ".join(parts[1:]))
+
+    return candidates
 
 class AvailabilityRepository:
     def __init__(self, supabase: Client):
@@ -245,9 +285,15 @@ class AvailabilityRepository:
         rows: list[dict[str, object]] = []
 
         for entry in entries:
-            personnel_id = personnel_lookup.get(
-                normalise_text(entry.person_name)
-            )
+            personnel_id = None
+
+            for candidate in _personnel_name_candidates(
+                entry.person_name
+            ):
+                personnel_id = personnel_lookup.get(candidate)
+
+                if personnel_id is not None:
+                    break
 
             if personnel_id is None:
                 unknown_people.add(entry.person_name)
