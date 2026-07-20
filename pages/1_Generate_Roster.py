@@ -6,10 +6,12 @@ import openpyxl
 import streamlit as st
 
 from roster_engine.documents import get_current_document
+from roster_engine.availability import load_availability
 from roster_engine.generator import (
-    GenerationRequest,
+    GenerationSettings,
     generate_roster,
 )
+from roster_engine.personnel import load_personnel
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -154,38 +156,92 @@ if st.button(
         leave_path = temp_path / "leave_forecast.xlsx"
         leave_path.write_bytes(uploaded_leave.getvalue())
 
-        output_path = (
-            temp_path
-            / f"{selected_month:%B_%Y}_Roster.xlsx"
-        )
-
         scheduling_roster_path = (
             APP_ROOT
             / "reference"
             / "Scheduling Roster 2026.xlsx"
         )
 
-        request = GenerationRequest(
-            roster_month=selected_month.replace(day=1),
-            scheduling_roster_path=scheduling_roster_path,
-            leave_workbook_path=leave_path,
-            leave_sheet=selected_sheet,
-            rulebook_text=rulebook.content,
-            assumptions_text=assumptions.content,
-            output_path=output_path,
+        try:
+            personnel = load_personnel(
+                scheduling_roster_path
+            )
+
+            availability_entries = load_availability(
+                workbook_path=leave_path,
+                worksheet_name=selected_sheet,
+            )
+
+            result = generate_roster(
+                personnel=personnel,
+                availability_entries=availability_entries,
+                settings=GenerationSettings(
+                    year=selected_month.year,
+                    month=selected_month.month,
+                ),
+            )
+
+        except Exception as exc:
+            st.error(f"Roster generation failed: {exc}")
+            st.exception(exc)
+            st.stop()
+
+        report = result.report
+
+        st.success("Roster scheduling completed.")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.metric(
+            "Personnel",
+            report.personnel_count,
         )
 
-        result = generate_roster(request)
+        col2.metric(
+            "Availability blocks",
+            report.availability_entry_count,
+        )
 
-        if result.statistics:
-            st.subheader("Input validation")
-            st.json(result.statistics)
+        col3.metric(
+            "Assignments generated",
+            report.generated_assignment_count,
+        )
 
-        for error in result.errors:
-            st.error(error)
+        col4.metric(
+            "Unfilled duties",
+            report.unfilled_requirement_count,
+        )
 
-        for warning in result.warnings:
+        completion_rate = min(
+            max(report.completion_rate, 0.0),
+            1.0,
+        )
+
+        st.progress(completion_rate)
+
+        st.caption(
+            f"Completion rate: {report.completion_rate:.1%}"
+        )
+
+        for warning in report.warnings:
             st.warning(warning)
 
-        if result.success:
-            st.success("Roster generated successfully.")
+        if result.unfilled_requirements:
+            st.subheader("Unfilled requirements")
+
+            unfilled_rows = [
+                {
+                    "Date": requirement.duty_date,
+                    "Role": requirement.role,
+                    "Centre": requirement.centre,
+                    "Overnight": requirement.is_overnight,
+                    "Points": requirement.points,
+                }
+                for requirement in result.unfilled_requirements
+            ]
+
+            st.dataframe(
+                unfilled_rows,
+                use_container_width=True,
+                hide_index=True,
+            )
