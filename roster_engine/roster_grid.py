@@ -59,6 +59,7 @@ def normalise_date(value: Any) -> date | None:
 
 def find_roster_days(worksheet: Worksheet) -> list[RosterDay]:
     days: list[RosterDay] = []
+    date_sequence_started = False
 
     for column_number in range(
         SCHEDULE_START_COLUMN,
@@ -71,11 +72,16 @@ def find_roster_days(worksheet: Worksheet) -> list[RosterDay]:
 
         roster_date = normalise_date(raw_date)
 
-        # Stop once the date sequence ends.
-        # In this workbook, the next columns contain labels such as
-        # DM, CS1, CS2, Total Duty, etc.
         if roster_date is None:
-            break
+            if date_sequence_started:
+                # The calendar sequence has ended. Remaining columns
+                # contain summary fields such as DM, CS1 and totals.
+                break
+
+            # Allow blank or label columns before the first calendar day.
+            continue
+
+        date_sequence_started = True
 
         event = clean_text(
             worksheet.cell(
@@ -90,6 +96,11 @@ def find_roster_days(worksheet: Worksheet) -> list[RosterDay]:
                 column=column_number,
             ).value
         )
+
+        # Fall back to the actual date if cached formula results
+        # are unavailable.
+        if not day_name:
+            day_name = roster_date.strftime("%a")
 
         days.append(
             RosterDay(
