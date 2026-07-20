@@ -53,31 +53,43 @@ def find_date_columns(
     month: int,
 ) -> dict[date, int]:
     """
-    Map each calendar date in the target month to its worksheet column.
+    Map every date in the target month to its roster column.
+
+    The roster stores the first date as a real Excel date while later
+    date cells may contain formulas. Once the first date is found, the
+    remaining columns are mapped sequentially.
     """
-    date_columns: dict[date, int] = {}
+    from calendar import monthrange
+
+    first_day = date(year, month, 1)
+    days_in_month = monthrange(year, month)[1]
+
+    first_date_column: int | None = None
 
     for column_number in range(
         SCHEDULE_START_COLUMN,
         worksheet.max_column + 1,
     ):
-        cell_date = normalise_date(
-            worksheet.cell(
-                row=DATE_ROW,
-                column=column_number,
-            ).value
+        cell_value = worksheet.cell(
+            row=DATE_ROW,
+            column=column_number,
+        ).value
+
+        cell_date = normalise_date(cell_value)
+
+        if cell_date == first_day:
+            first_date_column = column_number
+            break
+
+    if first_date_column is None:
+        return {}
+
+    return {
+        date(year, month, day_number): (
+            first_date_column + day_number - 1
         )
-
-        if cell_date is None:
-            continue
-
-        if (
-            cell_date.year == year
-            and cell_date.month == month
-        ):
-            date_columns[cell_date] = column_number
-
-    return date_columns
+        for day_number in range(1, days_in_month + 1)
+    }
 
 
 def find_personnel_rows(
