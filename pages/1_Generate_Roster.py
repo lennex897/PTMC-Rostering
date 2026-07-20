@@ -14,6 +14,8 @@ from roster_engine.generator import (
 )
 from roster_engine.personnel import load_personnel
 
+from roster_engine.validator import validate_schedule
+
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 
@@ -195,6 +197,27 @@ if st.button(
                     month=selected_month.month,
                 ),
             )
+
+            validation_report = validate_schedule(
+                schedule=result.schedule,
+                personnel=personnel,
+                availability_entries=availability_entries,
+                requirements=result.requirements,
+                year=selected_month.year,
+                month=selected_month.month,
+                maximum_weekly_overnights=3,
+            )
+
+            if not validation_report.is_valid:
+                issue_lines = [
+                    issue.message
+                    for issue in validation_report.errors
+                ]
+
+                raise ValueError(
+                    "Generated roster failed validation:\n"
+                    + "\n".join(issue_lines)
+                )
 
             export_schedule(
                 template_path=scheduling_roster_path,
