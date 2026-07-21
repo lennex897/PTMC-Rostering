@@ -483,106 +483,106 @@ class AvailabilityRepository:
 
         return month
 
-def list_month_availability(
-    self,
-    *,
-    year: int,
-    month: int,
-) -> list[StoredAvailabilityEntry]:
-    """
-    Load stored availability records for one month.
+    def list_month_availability(
+        self,
+        *,
+        year: int,
+        month: int,
+    ) -> list[StoredAvailabilityEntry]:
+        """
+        Load stored availability records for one month.
 
-    Unlike load_month_availability(), this preserves database IDs
-    and metadata for use by the Availability Management page.
-    """
-    month_start = date(year, month, 1)
-    roster_month = self.get_roster_month(month_start)
+        Unlike load_month_availability(), this preserves database IDs
+        and metadata for use by the Availability Management page.
+        """
+        month_start = date(year, month, 1)
+        roster_month = self.get_roster_month(month_start)
 
-    if roster_month is None:
-        return []
+        if roster_month is None:
+            return []
 
-    try:
-        response = (
-            self.supabase
-            .table("roster_availability")
-            .select(
-                """
-                id,
-                roster_month_id,
-                personnel_id,
-                availability_date,
-                code,
-                source,
-                notes,
-                roster_personnel(
-                    name,
-                    rank,
-                    centre
+        try:
+            response = (
+                self.supabase
+                .table("roster_availability")
+                .select(
+                    """
+                    id,
+                    roster_month_id,
+                    personnel_id,
+                    availability_date,
+                    code,
+                    source,
+                    notes,
+                    roster_personnel(
+                        name,
+                        rank,
+                        centre
+                    )
+                    """
                 )
-                """
+                .eq(
+                    "roster_month_id",
+                    roster_month.id,
+                )
+                .order(
+                    "availability_date"
+                )
+                .execute()
             )
-            .eq(
-                "roster_month_id",
-                roster_month.id,
-            )
-            .order(
-                "availability_date"
-            )
-            .execute()
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            "Unable to load stored availability from Supabase."
-        ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                "Unable to load stored availability from Supabase."
+            ) from exc
 
-    entries: list[StoredAvailabilityEntry] = []
+        entries: list[StoredAvailabilityEntry] = []
 
-    for row in response.data or []:
-        personnel_data = (
-            row.get("roster_personnel") or {}
-        )
-
-        # Defensive handling in case Supabase returns a list.
-        if isinstance(personnel_data, list):
+        for row in response.data or []:
             personnel_data = (
-                personnel_data[0]
-                if personnel_data
-                else {}
+                row.get("roster_personnel") or {}
             )
 
-        entries.append(
-            StoredAvailabilityEntry(
-                id=str(row["id"]),
-                roster_month_id=str(
-                    row["roster_month_id"]
-                ),
-                personnel_id=str(
-                    row["personnel_id"]
-                ),
-                person_name=str(
-                    personnel_data.get("name") or ""
-                ).strip(),
-                rank=str(
-                    personnel_data.get("rank") or ""
-                ).strip(),
-                centre=str(
-                    personnel_data.get("centre") or ""
-                ).strip().upper(),
-                unavailable_date=date.fromisoformat(
-                    str(row["availability_date"])
-                ),
-                reason=str(
-                    row.get("code") or ""
-                ).strip().upper(),
-                source=str(
-                    row.get("source") or "manual"
-                ).strip(),
-                notes=(
-                    str(row["notes"]).strip()
-                    if row.get("notes")
-                    else None
-                ),
-            )
-        )
+            # Defensive handling in case Supabase returns a list.
+            if isinstance(personnel_data, list):
+                personnel_data = (
+                    personnel_data[0]
+                    if personnel_data
+                    else {}
+                )
 
-    return entries
+            entries.append(
+                StoredAvailabilityEntry(
+                    id=str(row["id"]),
+                    roster_month_id=str(
+                        row["roster_month_id"]
+                    ),
+                    personnel_id=str(
+                        row["personnel_id"]
+                    ),
+                    person_name=str(
+                        personnel_data.get("name") or ""
+                    ).strip(),
+                    rank=str(
+                        personnel_data.get("rank") or ""
+                    ).strip(),
+                    centre=str(
+                        personnel_data.get("centre") or ""
+                    ).strip().upper(),
+                    unavailable_date=date.fromisoformat(
+                        str(row["availability_date"])
+                    ),
+                    reason=str(
+                        row.get("code") or ""
+                    ).strip().upper(),
+                    source=str(
+                        row.get("source") or "manual"
+                    ).strip(),
+                    notes=(
+                        str(row["notes"]).strip()
+                        if row.get("notes")
+                        else None
+                    ),
+                )
+            )
+
+        return entries
