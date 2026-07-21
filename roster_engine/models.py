@@ -13,6 +13,7 @@ class Person:
     eligible_roles: set[str] = field(default_factory=set)
     is_cover_fit: bool | None = None
     is_active: bool = True
+    service_type: str | None = None
 
     @property
     def is_ampt_valid(self) -> bool:
