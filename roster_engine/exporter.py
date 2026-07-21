@@ -17,6 +17,88 @@ from roster_engine.roster_grid import (
     normalise_date,
 )
 
+KNOWN_RANKS = {
+    "REC",
+    "PTE",
+    "LCP",
+    "CPL",
+    "CFC",
+    "3SG",
+    "2SG",
+    "1SG",
+    "SSG",
+    "MSG",
+    "3WO",
+    "2WO",
+    "1WO",
+    "MWO",
+    "SWO",
+    "ME1",
+    "ME2",
+    "ME3",
+    "ME4",
+    "ME5",
+    "ME6",
+    "ME7",
+    "ME8",
+}
+
+NON_PERSONNEL_LABELS = {
+    "DM",
+    "CS1",
+    "CS2",
+    "CS/B",
+    "SB1",
+    "SB2",
+    "AE",
+    "RESERVE",
+    "TEMP COVER ROW",
+    "COMBAT POINTS",
+    "TOTAL POINTS",
+    "NUMBER OF DM",
+    "NUMBER OF SB",
+    "NUMBER OF CS",
+    "NUMBER OF AE",
+    "TOTAL DUTY TEAM STRENGTH",
+}
+
+def canonical_person_name(value: object) -> str:
+    """
+    Return a standardised personnel name for matching Supabase records
+    against names in the Excel roster.
+
+    Examples:
+        "CFC GERALD TAN "        -> "GERALD TAN"
+        "LCP JARED JUAY (BCF)"   -> "JARED JUAY"
+        "LCP GOH SONG YEE, ETHAN" -> "GOH SONG YEE ETHAN"
+    """
+    import re
+
+    normalised = normalise_text(value)
+
+    if not normalised:
+        return ""
+
+    # Remove trailing annotations such as "(BCF)".
+    normalised = re.sub(
+        r"\s*\([^)]*\)\s*$",
+        "",
+        normalised,
+    )
+
+    # Treat commas as spacing rather than part of the name.
+    normalised = normalised.replace(",", " ")
+
+    # Collapse repeated spaces.
+    normalised = " ".join(normalised.split())
+
+    parts = normalised.split()
+
+    # Remove the rank prefix.
+    if len(parts) >= 2 and parts[0] in KNOWN_RANKS:
+        normalised = " ".join(parts[1:])
+
+    return normalised
 
 def roster_worksheet_name(year: int, month: int) -> str:
     """
@@ -92,11 +174,12 @@ def find_date_columns(
     }
 
 
+
 def find_personnel_rows(
     worksheet: Worksheet,
 ) -> dict[str, int]:
     """
-    Map normalised personnel names to worksheet row numbers.
+    Map personnel names (ignoring rank prefixes) to worksheet rows.
     """
     personnel_rows: dict[str, int] = {}
 
@@ -109,15 +192,17 @@ def find_personnel_rows(
             column=PERSONNEL_COLUMN,
         ).value
 
-        normalised_name = normalise_text(raw_name)
+        canonical_name = canonical_person_name(raw_name)
 
-        if not normalised_name:
+        if not canonical_name:
             continue
 
-        personnel_rows[normalised_name] = row_number
+        if canonical_name in NON_PERSONNEL_LABELS:
+            continue
+
+        personnel_rows[canonical_name] = row_number
 
     return personnel_rows
-
 
 def copy_cell_style(
     source_cell,
@@ -207,11 +292,11 @@ def export_schedule(
             ):
                 continue
 
-            normalised_name = normalise_text(
+            canonical_name = canonical_person_name(
                 assignment.person_name
             )
 
-            row_number = personnel_rows.get(normalised_name)
+            row_number = personnel_rows.get(canonical_name)
             column_number = date_columns.get(
                 assignment.duty_date
             )

@@ -1,16 +1,9 @@
+import openpyxl
 
-from roster_engine.personnel_repository import (
-    load_personnel_from_supabase,
-)
+wb = openpyxl.load_workbook("reference/Scheduling Roster 2026.xlsx", data_only=True)
+ws = wb["Aug-2026 Roster"]
 
-personnel = load_personnel_from_supabase()
-
-print(f"Loaded {len(personnel)} active personnel")
-
-for person in personnel[:10]:
-    print(
-        person.name,
-        person.rank,
-        person.centre,
-        sorted(person.eligible_roles),
-    )
+for r in range(5, ws.max_row + 1):
+    v = ws.cell(r, 2).value
+    if v:
+        print(v)
