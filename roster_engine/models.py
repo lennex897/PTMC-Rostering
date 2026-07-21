@@ -9,7 +9,6 @@ class Person:
     centre: str
     department: str
     ampt_status: str
-    is_bcf: bool = False
     leaving_date: date | None = None
     eligible_roles: set[str] = field(default_factory=set)
     is_active: bool = True

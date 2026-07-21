@@ -255,9 +255,7 @@ def _row_to_person(
         ampt_status=_normalise_text(
             row.get("ampt_status")
         ).upper(),
-        is_bcf=bool(
-            row.get("is_bcf", False)
-        ),
+        
         leaving_date=_parse_optional_date(
             row.get("leaving_date")
         ),
@@ -290,7 +288,6 @@ def load_personnel_records(
             centre,
             department,
             ampt_status,
-            is_bcf,
             leaving_date,
             is_active,
             display_order,
@@ -378,7 +375,6 @@ def get_personnel_record(
                 centre,
                 department,
                 ampt_status,
-                is_bcf,
                 leaving_date,
                 is_active,
                 display_order,
@@ -426,7 +422,6 @@ def create_person(
     centre: str,
     department: str,
     ampt_status: str,
-    is_bcf: bool = False,
     leaving_date: date | None = None,
     display_order: int = 0,
     eligible_roles: Iterable[str] | None = None,
@@ -464,7 +459,6 @@ def create_person(
             department
         ),
         "ampt_status": normalised_ampt,
-        "is_bcf": bool(is_bcf),
         "leaving_date": (
             _serialise_optional_date(
                 leaving_date
@@ -539,7 +533,6 @@ def update_person(
     centre: str,
     department: str,
     ampt_status: str,
-    is_bcf: bool,
     leaving_date: date | None,
     display_order: int,
     eligible_roles: Iterable[str] | None = None,
@@ -575,7 +568,6 @@ def update_person(
             department
         ),
         "ampt_status": normalised_ampt,
-        "is_bcf": bool(is_bcf),
         "leaving_date": (
             _serialise_optional_date(
                 leaving_date

@@ -82,7 +82,6 @@ def render_add_person_form() -> None:
                 ["PASS", "FAIL"],
                 key="add_ampt_status",
             )
-            is_bcf = st.checkbox("BCF", key="add_is_bcf")
 
         with right:
             has_leaving_date = st.checkbox(
@@ -117,7 +116,6 @@ def render_add_person_form() -> None:
                     centre=centre,
                     department=department,
                     ampt_status=ampt_status,
-                    is_bcf=is_bcf,
                     leaving_date=leaving_date_value if has_leaving_date else None,
                     display_order=int(display_order),
                     eligible_roles=selected_roles,
@@ -266,11 +264,6 @@ def render_edit_form(record: Any) -> None:
             index=0 if person.ampt_status == "PASS" else 1,
             key=f"edit_ampt_{record.id}",
         )
-        is_bcf = st.checkbox(
-            "BCF",
-            value=person.is_bcf,
-            key=f"edit_bcf_{record.id}",
-        )
 
     with right:
         has_leaving_date = st.checkbox(
@@ -315,7 +308,6 @@ def render_edit_form(record: Any) -> None:
                     centre=centre,
                     department=department,
                     ampt_status=ampt_status,
-                    is_bcf=is_bcf,
                     leaving_date=leaving_date_value if has_leaving_date else None,
                     display_order=int(display_order),
                     eligible_roles=selected_roles,
