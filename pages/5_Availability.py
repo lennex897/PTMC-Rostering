@@ -10,6 +10,7 @@ from roster_engine.availability_repository import (
     AvailabilityRepository,
 )
 from roster_engine.database import get_supabase
+from roster_engine.models import StoredAvailabilityEntry
 from roster_engine.personnel_repository import (
     PersonnelRecord,
     load_personnel_records,
@@ -27,6 +28,12 @@ AVAILABILITY_CODES = [
     "MA",
     "AM",
     "PM",
+]
+
+
+MATRIX_AVAILABILITY_CODES = [
+    "",
+    *AVAILABILITY_CODES,
 ]
 
 
@@ -80,6 +87,7 @@ def personnel_label(
         f" — {person.centre}"
     )
 
+
 def full_personnel_name(
     record: PersonnelRecord,
 ) -> str:
@@ -89,6 +97,114 @@ def full_personnel_name(
         return f"{person.rank} {person.name}"
 
     return person.name
+
+def matrix_date_column_name(
+    unavailable_date: date,
+) -> str:
+    """
+    Produce compact matrix column labels such as:
+
+    01 Sat
+    02 Sun
+    03 Mon
+    """
+    return unavailable_date.strftime("%d %a")
+
+
+def build_availability_matrix(
+    *,
+    personnel_records: list[PersonnelRecord],
+    stored_entries: list[StoredAvailabilityEntry],
+    month_dates: list[date],
+) -> list[dict[str, object]]:
+    """
+    Build one editable row per person.
+
+    Multiple database records for the same person and date should not
+    normally exist because of the database unique constraint. If they do,
+    the final record encountered is displayed.
+    """
+    availability_lookup = {
+        (
+            entry.personnel_id,
+            entry.unavailable_date,
+        ): entry.reason
+        for entry in stored_entries
+    }
+
+    matrix_rows: list[dict[str, object]] = []
+
+    for record in personnel_records:
+        person = record.person
+
+        row: dict[str, object] = {
+            "personnel_id": record.id,
+            "Centre": person.centre,
+            "Rank": person.rank or "",
+            "Personnel": person.name,
+        }
+
+        for current_date in month_dates:
+            row[
+                matrix_date_column_name(current_date)
+            ] = availability_lookup.get(
+                (
+                    record.id,
+                    current_date,
+                ),
+                "",
+            )
+
+        matrix_rows.append(row)
+
+    return matrix_rows
+
+
+def matrix_values_by_person_and_date(
+    *,
+    matrix_rows: list[dict[str, object]],
+    month_dates: list[date],
+) -> dict[tuple[str, date], str]:
+    """
+    Convert matrix rows back into a person/date lookup.
+    """
+    values: dict[tuple[str, date], str] = {}
+
+    rows = (
+        matrix_rows.to_dict(orient="records")
+        if hasattr(matrix_rows, "to_dict")
+        else matrix_rows
+    )
+
+    for row in rows:
+        personnel_id = str(
+            row["personnel_id"]
+        )
+
+        for current_date in month_dates:
+            column_name = matrix_date_column_name(
+                current_date
+            )
+
+            raw_value = row.get(
+                column_name,
+                "",
+            )
+
+            value = (
+                str(raw_value).strip().upper()
+                if raw_value is not None
+                else ""
+            )
+
+            values[
+                (
+                    personnel_id,
+                    current_date,
+                )
+            ] = value
+
+    return values
 
 @st.cache_data(ttl=30)
 def load_cached_personnel() -> list[PersonnelRecord]:
@@ -200,9 +316,10 @@ metric_3.metric(
 
 st.divider()
 
-dashboard_tab, entry_tab, review_tab = st.tabs(
+dashboard_tab, matrix_tab, entry_tab, review_tab = st.tabs(
     [
         "Dashboard",
+        "Monthly matrix",
         "Plot availability",
         "Review entries",
     ]
@@ -611,6 +728,349 @@ with dashboard_tab:
             use_container_width=True,
             hide_index=True,
         )
+
+with matrix_tab:
+    st.subheader(
+        f"Monthly availability matrix — "
+        f"{selected_month:%B %Y}"
+    )
+
+    st.caption(
+        "Select an availability code in any date cell. "
+        "Leave the cell blank when the person is available."
+    )
+
+    matrix_filter_column, matrix_info_column = (
+        st.columns([1, 2])
+    )
+
+    with matrix_filter_column:
+        matrix_centre_filter = st.selectbox(
+            "Centre",
+            options=[
+                "All",
+                "PT",
+                "RH",
+            ],
+            key="matrix_centre_filter",
+        )
+
+    with matrix_info_column:
+        st.info(
+            "Changes are not written to Supabase until "
+            "you select **Save matrix changes**."
+        )
+
+    filtered_matrix_personnel = [
+        record
+        for record in personnel_records
+        if (
+            matrix_centre_filter == "All"
+            or record.person.centre
+            == matrix_centre_filter
+        )
+    ]
+
+    month_dates = dates_between(
+        selected_month,
+        month_last_day,
+    )
+
+    matrix_rows = build_availability_matrix(
+        personnel_records=filtered_matrix_personnel,
+        stored_entries=stored_entries,
+        month_dates=month_dates,
+    )
+
+    matrix_column_config: dict[
+        str,
+        object,
+    ] = {
+        "personnel_id": None,
+        "Centre": st.column_config.TextColumn(
+            "Centre",
+            disabled=True,
+            width="small",
+        ),
+        "Rank": st.column_config.TextColumn(
+            "Rank",
+            disabled=True,
+            width="small",
+        ),
+        "Personnel": st.column_config.TextColumn(
+            "Personnel",
+            disabled=True,
+            width="medium",
+        ),
+    }
+
+    for current_date in month_dates:
+        column_name = matrix_date_column_name(
+            current_date
+        )
+
+        matrix_column_config[
+            column_name
+        ] = st.column_config.SelectboxColumn(
+            column_name,
+            options=MATRIX_AVAILABILITY_CODES,
+            required=False,
+            width="small",
+        )
+
+    edited_matrix = st.data_editor(
+        matrix_rows,
+        column_config=matrix_column_config,
+        disabled=[
+            "Centre",
+            "Rank",
+            "Personnel",
+        ],
+        hide_index=True,
+        use_container_width=True,
+        height=min(
+            900,
+            90
+            + len(matrix_rows) * 35,
+        ),
+        key=(
+            "availability_matrix_"
+            f"{selected_month:%Y_%m}_"
+            f"{matrix_centre_filter}"
+        ),
+    )
+
+    matrix_entry_lookup = {
+        (
+            entry.personnel_id,
+            entry.unavailable_date,
+        ): entry
+        for entry in stored_entries
+        if (
+            matrix_centre_filter == "All"
+            or entry.centre
+            == matrix_centre_filter
+        )
+    }
+
+    original_matrix_values = {
+        key: entry.reason
+        for key, entry
+        in matrix_entry_lookup.items()
+    }
+
+    edited_matrix_values = (
+        matrix_values_by_person_and_date(
+            matrix_rows=edited_matrix,
+            month_dates=month_dates,
+        )
+    )
+
+    changed_cells: list[
+        tuple[str, date, str, str]
+    ] = []
+
+    for key, edited_value in (
+        edited_matrix_values.items()
+    ):
+        original_value = (
+            original_matrix_values.get(
+                key,
+                "",
+            )
+        )
+
+        if edited_value != original_value:
+            personnel_id, unavailable_date = key
+
+            changed_cells.append(
+                (
+                    personnel_id,
+                    unavailable_date,
+                    original_value,
+                    edited_value,
+                )
+            )
+
+    st.caption(
+        f"{len(changed_cells)} unsaved "
+        f"change"
+        f"{'' if len(changed_cells) == 1 else 's'}."
+    )
+
+    if changed_cells:
+        changed_personnel_lookup = {
+            record.id: record
+            for record in filtered_matrix_personnel
+        }
+
+        with st.expander(
+            "Review unsaved changes",
+            expanded=False,
+        ):
+            change_preview_rows = []
+
+            for (
+                personnel_id,
+                unavailable_date,
+                old_value,
+                new_value,
+            ) in changed_cells:
+                record = (
+                    changed_personnel_lookup[
+                        personnel_id
+                    ]
+                )
+
+                change_preview_rows.append(
+                    {
+                        "Personnel": (
+                            record.person.name
+                        ),
+                        "Centre": (
+                            record.person.centre
+                        ),
+                        "Date": unavailable_date,
+                        "Previous": (
+                            old_value or "Available"
+                        ),
+                        "New": (
+                            new_value or "Available"
+                        ),
+                    }
+                )
+
+            st.dataframe(
+                change_preview_rows,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Date": (
+                        st.column_config.DateColumn(
+                            "Date",
+                            format="DD/MM/YYYY",
+                        )
+                    ),
+                },
+            )
+
+    save_matrix_changes = st.button(
+        "Save matrix changes",
+        type="primary",
+        disabled=not changed_cells,
+        key="save_availability_matrix",
+    )
+
+    if save_matrix_changes:
+        save_errors: list[str] = []
+        saved_changes = 0
+
+        progress_bar = st.progress(
+            0,
+            text="Saving matrix changes...",
+        )
+
+        total_changes = len(changed_cells)
+        roster_month = repository.get_or_create_roster_month(
+            selected_month
+        )
+
+        for change_number, (
+            personnel_id,
+            unavailable_date,
+            old_value,
+            new_value,
+        ) in enumerate(
+            changed_cells,
+            start=1,
+        ):
+            try:
+                existing_entry = (
+                    matrix_entry_lookup.get(
+                        (
+                            personnel_id,
+                            unavailable_date,
+                        )
+                    )
+                )
+
+                if new_value:
+                    repository.add_availability_entry(
+                        roster_month_id=roster_month.id,
+                        personnel_id=personnel_id,
+                        unavailable_date=(
+                            unavailable_date
+                        ),
+                        reason=new_value,
+                        source="manual_matrix",
+                        notes=None,
+                    )
+
+                elif existing_entry is not None:
+                    repository.delete_availability_entry(
+                        existing_entry.id
+                    )
+
+                saved_changes += 1
+
+            except Exception as exc:
+                record = next(
+                    (
+                        item
+                        for item
+                        in filtered_matrix_personnel
+                        if item.id
+                        == personnel_id
+                    ),
+                    None,
+                )
+
+                person_name = (
+                    record.person.name
+                    if record is not None
+                    else personnel_id
+                )
+
+                save_errors.append(
+                    f"{person_name}, "
+                    f"{unavailable_date:%d/%m/%Y}: "
+                    f"{exc}"
+                )
+
+            progress_bar.progress(
+                change_number
+                / total_changes,
+                text=(
+                    f"Saving change "
+                    f"{change_number} of "
+                    f"{total_changes}..."
+                ),
+            )
+
+        progress_bar.empty()
+
+        if save_errors:
+            st.error(
+                f"Saved {saved_changes} change(s), "
+                f"but {len(save_errors)} failed."
+            )
+
+            with st.expander(
+                "View save errors",
+                expanded=True,
+            ):
+                for error_message in save_errors:
+                    st.write(
+                        f"- {error_message}"
+                    )
+
+        else:
+            st.success(
+                f"Saved {saved_changes} "
+                f"matrix change(s)."
+            )
+
+            st.rerun()
 
 with entry_tab:
     st.subheader("Add or update availability")
