@@ -998,11 +998,9 @@ with matrix_tab:
                     repository.add_availability_entry(
                         roster_month_id=roster_month.id,
                         personnel_id=personnel_id,
-                        unavailable_date=(
-                            unavailable_date
-                        ),
+                        unavailable_date=unavailable_date,
                         reason=new_value,
-                        source="manual_matrix",
+                        source="manual",
                         notes=None,
                     )
 
