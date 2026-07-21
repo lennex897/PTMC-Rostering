@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
 from roster_engine.personnel_repository import (
@@ -206,60 +207,252 @@ def render_add_person_form() -> None:
                 rerun()
 
 
+def personnel_table_row(
+    record: Any,
+) -> dict[str, object]:
+    person = record.person
+
+    return {
+        "Order": record.display_order,
+        "Rank": person.rank,
+        "Name": person.name,
+        "Centre": person.centre,
+        "Department": person.department,
+        "AMPT": person.ampt_status,
+        "Service": service_type_from_database(
+            person.service_type
+        ),
+        "Cover fitness": cover_fitness_from_database(
+            person.is_cover_fit
+        ),
+        "Leaving date": person.leaving_date,
+        "Eligible roles": ", ".join(
+            sorted(person.eligible_roles)
+        ),
+        "_record_id": record.id,
+    }
+
+
 def render_active_personnel(
     records: list[Any],
 ) -> None:
-    st.subheader("Active personnel")
+    st.markdown("---")
+    st.subheader("Personnel list")
+    st.caption(
+        "Use the filters or sort the table, then select a row "
+        "to open that person's edit form."
+    )
 
     active_records = [
-        r for r in records
-        if r.person.is_active
+        record
+        for record in records
+        if record.person.is_active
     ]
 
     if not active_records:
         st.info("No active personnel records found.")
         return
 
-    search_term = st.text_input(
-        "Search active personnel",
-        key="active_person_search",
-    ).strip().lower()
+    filter_left, filter_middle, filter_right = st.columns(
+        [2, 1, 1]
+    )
 
-    filtered_records = [
-        r
-        for r in active_records
-        if (
-            not search_term
-            or search_term in r.person.name.lower()
-            or search_term in r.person.rank.lower()
-            or search_term in r.person.centre.lower()
-            or search_term in r.person.department.lower()
-            or search_term in str(
-                r.person.service_type or ""
-            ).lower()
+    with filter_left:
+        search_term = st.text_input(
+            "Search",
+            placeholder=(
+                "Name, rank, department, service type, "
+                "cover fitness, or role"
+            ),
+            key="active_person_search",
+        ).strip().lower()
+
+    with filter_middle:
+        centre_filter = st.selectbox(
+            "Centre",
+            ["All", "PT", "RH"],
+            key="active_person_centre_filter",
         )
-    ]
+
+    with filter_right:
+        service_filter = st.selectbox(
+            "Service type",
+            ["All", *SERVICE_TYPE_OPTIONS],
+            key="active_person_service_filter",
+        )
+
+    filtered_records: list[Any] = []
+
+    for record in active_records:
+        person = record.person
+        service_label = service_type_from_database(
+            person.service_type
+        )
+        cover_label = cover_fitness_from_database(
+            person.is_cover_fit
+        )
+        searchable_text = " ".join(
+            [
+                person.name,
+                person.rank,
+                person.centre,
+                person.department,
+                person.ampt_status,
+                service_label,
+                cover_label,
+                " ".join(
+                    sorted(person.eligible_roles)
+                ),
+            ]
+        ).lower()
+
+        if (
+            search_term
+            and search_term not in searchable_text
+        ):
+            continue
+
+        if (
+            centre_filter != "All"
+            and person.centre != centre_filter
+        ):
+            continue
+
+        if (
+            service_filter != "All"
+            and service_label != service_filter
+        ):
+            continue
+
+        filtered_records.append(record)
 
     if not filtered_records:
         st.warning(
-            "No active personnel match the search."
+            "No active personnel match the current filters."
         )
         return
 
-    label_to_record = {
-        f"{r.person.name} ({r.person.centre})": r
-        for r in filtered_records
-    }
-
-    selected_label = st.selectbox(
-        "Select personnel to edit",
-        list(label_to_record),
-        key="active_person_selector",
+    table_data = pd.DataFrame(
+        [
+            personnel_table_row(record)
+            for record in filtered_records
+        ]
     )
 
-    render_edit_form(
-        label_to_record[selected_label]
-    )
+    selected_record: Any | None = None
+
+    try:
+        selection_event = st.dataframe(
+            table_data,
+            width="stretch",
+            height=520,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="active_person_table",
+            column_config={
+                "Order": st.column_config.NumberColumn(
+                    "Order",
+                    format="%d",
+                    width="small",
+                ),
+                "Rank": st.column_config.TextColumn(
+                    "Rank",
+                    width="small",
+                ),
+                "Name": st.column_config.TextColumn(
+                    "Name",
+                    width="medium",
+                ),
+                "Centre": st.column_config.TextColumn(
+                    "Centre",
+                    width="small",
+                ),
+                "Department": st.column_config.TextColumn(
+                    "Department",
+                    width="medium",
+                ),
+                "AMPT": st.column_config.TextColumn(
+                    "AMPT",
+                    width="small",
+                ),
+                "Service": st.column_config.TextColumn(
+                    "Service",
+                    width="small",
+                ),
+                "Cover fitness": st.column_config.TextColumn(
+                    "Cover fitness",
+                    width="medium",
+                ),
+                "Leaving date": st.column_config.DateColumn(
+                    "Leaving date",
+                    format="DD MMM YYYY",
+                    width="medium",
+                ),
+                "Eligible roles": st.column_config.TextColumn(
+                    "Eligible roles",
+                    width="large",
+                ),
+                "_record_id": None,
+            },
+        )
+
+        selected_rows = selection_event.selection.rows
+
+        if selected_rows:
+            selected_index = selected_rows[0]
+            selected_record_id = str(
+                table_data.iloc[
+                    selected_index
+                ]["_record_id"]
+            )
+            selected_record = next(
+                (
+                    record
+                    for record in filtered_records
+                    if record.id == selected_record_id
+                ),
+                None,
+            )
+
+    except TypeError:
+        # Compatibility fallback for older Streamlit releases
+        # that do not support dataframe row selection.
+        st.dataframe(
+            table_data.drop(
+                columns=["_record_id"]
+            ),
+            width="stretch",
+            height=520,
+            hide_index=True,
+        )
+
+        label_to_record = {
+            (
+                f"{record.person.name} "
+                f"({record.person.centre})"
+            ): record
+            for record in filtered_records
+        }
+
+        selected_label = st.selectbox(
+            "Select personnel to edit",
+            ["— Select —", *label_to_record],
+            key="active_person_selector_fallback",
+        )
+
+        if selected_label != "— Select —":
+            selected_record = label_to_record[
+                selected_label
+            ]
+
+    if selected_record is None:
+        st.info(
+            "Select a row in the table to edit that person."
+        )
+        return
+
+    render_edit_form(selected_record)
 
 
 def render_edit_form(
