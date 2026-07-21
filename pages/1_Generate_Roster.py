@@ -21,6 +21,14 @@ from roster_engine.validator import validate_schedule
 
 from roster_engine.requirements import RequirementSettings
 
+APP_ROOT = Path(__file__).resolve().parents[1]
+
+roster_template_path = (
+    APP_ROOT
+    / "reference"
+    / "Scheduling Roster 2026.xlsx"
+)
+
 st.set_page_config(
     page_title="Generate Roster",
     page_icon="⚙️",
@@ -218,7 +226,7 @@ if st.button(
                 )
 
             export_schedule(
-                template_path=scheduling_roster_path,
+                template_path=roster_template_path,
                 output_path=output_path,
                 schedule=result.schedule,
                 year=selected_month.year,
