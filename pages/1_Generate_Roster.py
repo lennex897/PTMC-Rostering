@@ -12,15 +12,14 @@ from roster_engine.generator import (
     GenerationSettings,
     generate_roster,
 )
-from roster_engine.personnel import load_personnel
+
+from roster_engine.personnel_repository import (
+    load_personnel_from_supabase,
+)
 
 from roster_engine.validator import validate_schedule
 
 from roster_engine.requirements import RequirementSettings
-
-
-APP_ROOT = Path(__file__).resolve().parents[1]
-
 
 st.set_page_config(
     page_title="Generate Roster",
@@ -175,16 +174,13 @@ if st.button(
             / f"{selected_month:%B_%Y}_Roster.xlsx"
         )
 
-        scheduling_roster_path = (
-            APP_ROOT
-            / "reference"
-            / "Scheduling Roster 2026.xlsx"
-        )
-
         try:
-            personnel = load_personnel(
-                scheduling_roster_path
-            )
+            personnel = load_personnel_from_supabase()
+
+            if not personnel:
+                raise RuntimeError(
+                    "No active personnel were found in Supabase."
+                )
 
             availability_entries = load_availability(
                 workbook_path=leave_path,
