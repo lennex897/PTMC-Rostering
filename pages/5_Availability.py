@@ -17,7 +17,7 @@ from roster_engine.personnel_repository import (
 )
 
 
-AVAILABILITY_CODES = [
+DEFAULT_AVAILABILITY_CODES = [
     "AL",
     "ORD",
     "HL",
@@ -28,12 +28,6 @@ AVAILABILITY_CODES = [
     "MA",
     "AM",
     "PM",
-]
-
-
-MATRIX_AVAILABILITY_CODES = [
-    "",
-    *AVAILABILITY_CODES,
 ]
 
 
@@ -207,6 +201,81 @@ def matrix_values_by_person_and_date(
     return values
 
 @st.cache_data(ttl=30)
+def load_cached_availability_codes() -> list[str]:
+    """Load active availability codes from Supabase."""
+    try:
+        response = (
+            get_supabase()
+            .table("roster_availability_codes")
+            .select("code")
+            .eq("active", True)
+            .order("display_order")
+            .order("code")
+            .execute()
+        )
+
+        codes = [
+            str(row["code"]).strip().upper()
+            for row in (response.data or [])
+            if str(row.get("code", "")).strip()
+        ]
+
+        return codes or DEFAULT_AVAILABILITY_CODES.copy()
+
+    except Exception:
+        # Keep the page usable before the optional code table is created.
+        return DEFAULT_AVAILABILITY_CODES.copy()
+
+
+def add_availability_code(
+    *,
+    code: str,
+    description: str | None = None,
+) -> None:
+    normalised_code = code.strip().upper()
+
+    if not normalised_code:
+        raise ValueError("Availability code cannot be blank.")
+
+    if len(normalised_code) > 20:
+        raise ValueError(
+            "Availability code must contain no more than 20 characters."
+        )
+
+    payload = {
+        "code": normalised_code,
+        "description": (description or "").strip() or None,
+        "active": True,
+    }
+
+    (
+        get_supabase()
+        .table("roster_availability_codes")
+        .upsert(payload, on_conflict="code")
+        .execute()
+    )
+
+    load_cached_availability_codes.clear()
+
+
+def deactivate_availability_code(code: str) -> None:
+    normalised_code = code.strip().upper()
+
+    if not normalised_code:
+        return
+
+    (
+        get_supabase()
+        .table("roster_availability_codes")
+        .update({"active": False})
+        .eq("code", normalised_code)
+        .execute()
+    )
+
+    load_cached_availability_codes.clear()
+
+
+@st.cache_data(ttl=30)
 def load_cached_personnel() -> list[PersonnelRecord]:
     return load_personnel_records()
 
@@ -254,6 +323,11 @@ if not personnel_records:
     )
     st.stop()
 
+availability_codes = load_cached_availability_codes()
+
+# Preserve codes already stored in the selected month, including inactive ones.
+stored_code_values: list[str] = []
+
 
 centre_filter = st.segmented_control(
     "Centre",
@@ -287,6 +361,28 @@ except Exception as exc:
         f"Unable to load availability: {exc}"
     )
     st.stop()
+
+stored_code_values = sorted(
+    {
+        entry.reason.strip().upper()
+        for entry in stored_entries
+        if entry.reason.strip()
+    }
+)
+
+availability_codes = list(
+    dict.fromkeys(
+        [
+            *availability_codes,
+            *stored_code_values,
+        ]
+    )
+)
+
+matrix_availability_codes = [
+    "",
+    *availability_codes,
+]
 
 
 total_people = len(
@@ -740,6 +836,74 @@ with matrix_tab:
         "Leave the cell blank when the person is available."
     )
 
+    with st.expander("Manage availability codes", expanded=False):
+        st.caption(
+            "Add a reusable code to the matrix and manual-entry dropdowns. "
+            "Codes are saved in uppercase."
+        )
+
+        code_column, description_column = st.columns([1, 2])
+
+        with code_column:
+            new_code = st.text_input(
+                "New code",
+                max_chars=20,
+                placeholder="e.g. COURSE",
+                key="new_availability_code",
+            )
+
+        with description_column:
+            new_code_description = st.text_input(
+                "Description",
+                placeholder="Optional description",
+                key="new_availability_code_description",
+            )
+
+        add_code_clicked = st.button(
+            "Add or reactivate code",
+            disabled=not new_code.strip(),
+            key="add_availability_code",
+        )
+
+        if add_code_clicked:
+            try:
+                add_availability_code(
+                    code=new_code,
+                    description=new_code_description,
+                )
+                st.success(
+                    f"Availability code {new_code.strip().upper()} is active."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Unable to save availability code: {exc}")
+
+        if availability_codes:
+            code_to_deactivate = st.selectbox(
+                "Deactivate a code",
+                options=["", *availability_codes],
+                key="deactivate_availability_code_selection",
+            )
+
+            deactivate_clicked = st.button(
+                "Deactivate selected code",
+                disabled=not code_to_deactivate,
+                key="deactivate_availability_code",
+            )
+
+            if deactivate_clicked:
+                try:
+                    deactivate_availability_code(code_to_deactivate)
+                    st.success(
+                        f"Availability code {code_to_deactivate} was deactivated. "
+                        "Existing records are unchanged."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(
+                        f"Unable to deactivate availability code: {exc}"
+                    )
+
     matrix_filter_column, matrix_info_column = (
         st.columns([1, 2])
     )
@@ -791,16 +955,19 @@ with matrix_tab:
             "Centre",
             disabled=True,
             width="small",
+            pinned=True,
         ),
         "Rank": st.column_config.TextColumn(
             "Rank",
             disabled=True,
             width="small",
+            pinned=True,
         ),
         "Personnel": st.column_config.TextColumn(
             "Personnel",
             disabled=True,
             width="medium",
+            pinned=True,
         ),
     }
 
@@ -813,7 +980,7 @@ with matrix_tab:
             column_name
         ] = st.column_config.SelectboxColumn(
             column_name,
-            options=MATRIX_AVAILABILITY_CODES,
+            options=matrix_availability_codes,
             required=False,
             width="small",
         )
@@ -1145,7 +1312,7 @@ with entry_tab:
 
     selected_code = st.selectbox(
         "Availability code",
-        options=AVAILABILITY_CODES,
+        options=availability_codes,
     )
 
     notes = st.text_area(
@@ -1259,7 +1426,7 @@ with review_tab:
         "Filter entries by code",
         options=[
             "All",
-            *AVAILABILITY_CODES,
+            *availability_codes,
         ],
     )
 
