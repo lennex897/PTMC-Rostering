@@ -11,6 +11,7 @@ class Person:
     ampt_status: str
     leaving_date: date | None = None
     eligible_roles: set[str] = field(default_factory=set)
+    is_cover_fit: bool | None = None
     is_active: bool = True
 
     @property

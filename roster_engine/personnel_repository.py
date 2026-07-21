@@ -255,13 +255,17 @@ def _row_to_person(
         ampt_status=_normalise_text(
             row.get("ampt_status")
         ).upper(),
-        
         leaving_date=_parse_optional_date(
             row.get("leaving_date")
         ),
         eligible_roles=eligible_roles,
         is_active=bool(
             row.get("is_active", True)
+        ),
+        is_cover_fit=(
+            row.get("is_cover_fit")
+            if row.get("is_cover_fit") is not None
+            else None
         ),
     )
 
@@ -291,6 +295,7 @@ def load_personnel_records(
             leaving_date,
             is_active,
             display_order,
+            is_cover_fit,
             roster_personnel_roles(role)
             """
         )
@@ -378,6 +383,7 @@ def get_personnel_record(
                 leaving_date,
                 is_active,
                 display_order,
+                is_cover_fit,
                 roster_personnel_roles(role)
                 """
             )
@@ -422,6 +428,7 @@ def create_person(
     centre: str,
     department: str,
     ampt_status: str,
+    is_cover_fit: bool | None = None,
     leaving_date: date | None = None,
     display_order: int = 0,
     eligible_roles: Iterable[str] | None = None,
@@ -459,6 +466,7 @@ def create_person(
             department
         ),
         "ampt_status": normalised_ampt,
+        "is_cover_fit": is_cover_fit,
         "leaving_date": (
             _serialise_optional_date(
                 leaving_date
@@ -468,6 +476,7 @@ def create_person(
         "display_order": int(
             display_order
         ),
+        "is_cover_fit": is_cover_fit,
     }
 
     client = get_supabase()
@@ -533,6 +542,7 @@ def update_person(
     centre: str,
     department: str,
     ampt_status: str,
+    is_cover_fit: bool | None,
     leaving_date: date | None,
     display_order: int,
     eligible_roles: Iterable[str] | None = None,
@@ -568,6 +578,7 @@ def update_person(
             department
         ),
         "ampt_status": normalised_ampt,
+        "is_cover_fit": is_cover_fit,
         "leaving_date": (
             _serialise_optional_date(
                 leaving_date
