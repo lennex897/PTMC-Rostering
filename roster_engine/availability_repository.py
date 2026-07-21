@@ -268,7 +268,167 @@ class AvailabilityRepository:
                 personnel_lookup[ranked_name] = personnel_id_text
 
         return personnel_lookup
-    
+
+    def add_availability_entry(
+        self,
+        *,
+        roster_month_id: str,
+        personnel_id: str,
+        unavailable_date: date,
+        reason: str,
+        source: str = "manual",
+        notes: str | None = None,
+    ) -> str:
+        """
+        Add or update one personnel availability entry.
+
+        The database should enforce one entry per person per date.
+        """
+        normalised_reason = normalise_text(reason).upper()
+
+        if not normalised_reason:
+            raise ValueError(
+                "Availability reason cannot be empty."
+            )
+
+        payload = {
+            "roster_month_id": roster_month_id,
+            "personnel_id": personnel_id,
+            "availability_date": (
+                unavailable_date.isoformat()
+            ),
+            "code": normalised_reason,
+            "source": source,
+            "notes": (
+                notes.strip()
+                if notes and notes.strip()
+                else None
+            ),
+        }
+
+        response = (
+            self.supabase
+            .table("roster_availability")
+            .upsert(
+                payload,
+                on_conflict=(
+                    "roster_month_id,"
+                    "personnel_id,"
+                    "availability_date"
+                ),
+            )
+            .execute()
+        )
+
+        if response is None:
+            raise RuntimeError(
+                "Supabase returned no response while saving "
+                "availability."
+            )
+
+        rows = response.data or []
+
+        if not rows or not rows[0].get("id"):
+            raise RuntimeError(
+                "Supabase did not return the saved "
+                "availability entry."
+            )
+
+        return str(rows[0]["id"])
+
+
+    def delete_availability_entry(
+        self,
+        availability_id: str,
+    ) -> None:
+        """
+        Delete one availability entry by UUID.
+        """
+        response = (
+            self.supabase
+            .table("roster_availability")
+            .delete()
+            .eq("id", availability_id)
+            .execute()
+        )
+
+        if response is None:
+            raise RuntimeError(
+                "Supabase returned no response while deleting "
+                "availability."
+            )
+
+        if not response.data:
+            raise ValueError(
+                "Availability entry was not found."
+            )
+
+    def load_month_availability(
+        self,
+        *,
+        year: int,
+        month: int,
+    ) -> list[AvailabilityEntry]:
+        """
+        Load a month's availability from Supabase and convert it into
+        AvailabilityEntry objects used by the scheduler.
+        """
+        month_start = date(year, month, 1)
+        roster_month = self.get_roster_month(month_start)
+
+        if roster_month is None:
+            return []
+
+        response = (
+            self.supabase
+            .table("roster_availability")
+            .select(
+                "availability_date, code, "
+                "roster_personnel(name)"
+            )
+            .eq("roster_month_id", roster_month.id)
+            .order("availability_date")
+            .execute()
+        )
+
+        if response is None:
+            raise RuntimeError(
+                "Supabase returned no response while loading "
+                "monthly availability."
+            )
+
+        entries: list[AvailabilityEntry] = []
+
+        for row in response.data or []:
+            personnel_data = (
+                row.get("roster_personnel") or {}
+            )
+
+            person_name = personnel_data.get("name")
+            availability_date = row.get(
+                "availability_date"
+            )
+            code = row.get("code")
+
+            if (
+                person_name is None
+                or availability_date is None
+                or code is None
+            ):
+                continue
+
+            entries.append(
+                AvailabilityEntry(
+                    person_name=str(person_name),
+                    unavailable_date=date.fromisoformat(
+                        str(availability_date)
+                    ),
+                    reason=str(code),
+                )
+            )
+
+        return entries
+
     def replace_month_availability(
         self,
         month_start: date,
@@ -322,3 +482,107 @@ class AvailabilityRepository:
         self.bulk_insert_availability(rows)
 
         return month
+
+def list_month_availability(
+    self,
+    *,
+    year: int,
+    month: int,
+) -> list[StoredAvailabilityEntry]:
+    """
+    Load stored availability records for one month.
+
+    Unlike load_month_availability(), this preserves database IDs
+    and metadata for use by the Availability Management page.
+    """
+    month_start = date(year, month, 1)
+    roster_month = self.get_roster_month(month_start)
+
+    if roster_month is None:
+        return []
+
+    try:
+        response = (
+            self.supabase
+            .table("roster_availability")
+            .select(
+                """
+                id,
+                roster_month_id,
+                personnel_id,
+                availability_date,
+                code,
+                source,
+                notes,
+                roster_personnel(
+                    name,
+                    rank,
+                    centre
+                )
+                """
+            )
+            .eq(
+                "roster_month_id",
+                roster_month.id,
+            )
+            .order(
+                "availability_date"
+            )
+            .execute()
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Unable to load stored availability from Supabase."
+        ) from exc
+
+    entries: list[StoredAvailabilityEntry] = []
+
+    for row in response.data or []:
+        personnel_data = (
+            row.get("roster_personnel") or {}
+        )
+
+        # Defensive handling in case Supabase returns a list.
+        if isinstance(personnel_data, list):
+            personnel_data = (
+                personnel_data[0]
+                if personnel_data
+                else {}
+            )
+
+        entries.append(
+            StoredAvailabilityEntry(
+                id=str(row["id"]),
+                roster_month_id=str(
+                    row["roster_month_id"]
+                ),
+                personnel_id=str(
+                    row["personnel_id"]
+                ),
+                person_name=str(
+                    personnel_data.get("name") or ""
+                ).strip(),
+                rank=str(
+                    personnel_data.get("rank") or ""
+                ).strip(),
+                centre=str(
+                    personnel_data.get("centre") or ""
+                ).strip().upper(),
+                unavailable_date=date.fromisoformat(
+                    str(row["availability_date"])
+                ),
+                reason=str(
+                    row.get("code") or ""
+                ).strip().upper(),
+                source=str(
+                    row.get("source") or "manual"
+                ).strip(),
+                notes=(
+                    str(row["notes"]).strip()
+                    if row.get("notes")
+                    else None
+                ),
+            )
+        )
+
+    return entries
