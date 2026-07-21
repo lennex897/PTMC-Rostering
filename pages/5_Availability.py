@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from calendar import monthrange
+from calendar import month_name, monthrange
 from datetime import date, timedelta
 from collections import Counter, defaultdict
 
@@ -431,17 +431,203 @@ def clear_page_cache() -> None:
     load_cached_personnel.clear()
 
 
+@st.cache_data(ttl=30)
+def load_roster_months() -> list[date]:
+    """
+    Load every roster month currently available in Supabase.
+    """
+    try:
+        response = (
+            get_supabase()
+            .table("roster_months")
+            .select("month_start")
+            .order("month_start", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Unable to load roster months from Supabase."
+        ) from exc
+
+    roster_months: list[date] = []
+
+    for row in response.data or []:
+        raw_value = row.get("month_start")
+
+        if isinstance(raw_value, date):
+            parsed_value = raw_value
+        elif isinstance(raw_value, str):
+            try:
+                parsed_value = date.fromisoformat(
+                    raw_value
+                )
+            except ValueError:
+                continue
+        else:
+            continue
+
+        roster_months.append(
+            month_start(parsed_value)
+        )
+
+    return sorted(
+        set(roster_months),
+        reverse=True,
+    )
+
+
+def roster_month_label(
+    value: date,
+) -> str:
+    return value.strftime("%b %y")
+
+
 repository = AvailabilityRepository(
     get_supabase()
 )
 
 today = date.today()
+current_month = today.replace(day=1)
 
-selected_month = st.date_input(
-    "Roster month",
-    value=today.replace(day=1),
-    format="DD/MM/YYYY",
+try:
+    available_roster_months = load_roster_months()
+except Exception as exc:
+    st.error(str(exc))
+    st.stop()
+
+month_column, create_column = st.columns(
+    [4, 1]
 )
+
+selected_month: date | None = None
+
+with month_column:
+    if available_roster_months:
+        stored_month_value = st.session_state.get(
+            "selected_roster_month"
+        )
+
+        selected_index = 0
+
+        if stored_month_value:
+            try:
+                stored_month = date.fromisoformat(
+                    str(stored_month_value)
+                )
+            except ValueError:
+                stored_month = None
+
+            if stored_month in available_roster_months:
+                selected_index = (
+                    available_roster_months.index(
+                        stored_month
+                    )
+                )
+        elif current_month in available_roster_months:
+            selected_index = (
+                available_roster_months.index(
+                    current_month
+                )
+            )
+
+        selected_month = st.selectbox(
+            "Roster month",
+            options=available_roster_months,
+            index=selected_index,
+            format_func=roster_month_label,
+            key="roster_month_selector",
+        )
+
+        st.session_state[
+            "selected_roster_month"
+        ] = selected_month.isoformat()
+    else:
+        st.info(
+            "No roster months exist yet. "
+            "Create the first month to begin."
+        )
+
+with create_column:
+    st.write("")
+    st.write("")
+
+    if st.button(
+        "＋ Create month",
+        use_container_width=True,
+    ):
+        st.session_state[
+            "show_create_roster_month"
+        ] = True
+
+if st.session_state.get(
+    "show_create_roster_month",
+    not available_roster_months,
+):
+    with st.expander(
+        "Create roster month",
+        expanded=True,
+    ):
+        with st.form(
+            "create_roster_month_form"
+        ):
+            form_month, form_year = st.columns(2)
+
+            with form_month:
+                new_month_number = st.selectbox(
+                    "Month",
+                    options=list(range(1, 13)),
+                    index=current_month.month - 1,
+                    format_func=lambda number: (
+                        month_name[number]
+                    ),
+                )
+
+            with form_year:
+                new_year = st.number_input(
+                    "Year",
+                    min_value=2020,
+                    max_value=2100,
+                    value=current_month.year,
+                    step=1,
+                )
+
+            create_submitted = st.form_submit_button(
+                "Create roster month",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if create_submitted:
+            requested_month = date(
+                int(new_year),
+                int(new_month_number),
+                1,
+            )
+
+            try:
+                repository.get_or_create_roster_month(
+                    requested_month
+                )
+            except Exception as exc:
+                st.error(
+                    "Unable to create roster month: "
+                    f"{exc}"
+                )
+            else:
+                load_roster_months.clear()
+                st.session_state[
+                    "selected_roster_month"
+                ] = requested_month.isoformat()
+                st.session_state[
+                    "show_create_roster_month"
+                ] = False
+                st.success(
+                    f"{requested_month:%B %Y} is ready."
+                )
+                st.rerun()
+
+if selected_month is None:
+    st.stop()
 
 selected_month = month_start(
     selected_month
