@@ -15,13 +15,59 @@ from roster_engine.personnel_repository import (
     update_person,
 )
 
-st.set_page_config(page_title="Personnel Management", page_icon="👥", layout="wide")
+SERVICE_TYPE_OPTIONS = ["Not set", "CBT", "SVC"]
+COVER_FITNESS_OPTIONS = ["Not set", "Cover fit", "Not cover fit"]
+
+st.set_page_config(
+    page_title="Personnel Management",
+    page_icon="👥",
+    layout="wide",
+)
 st.title("Personnel Management")
-st.caption("Create, edit, deactivate, and reactivate roster personnel.")
+st.caption(
+    "Create, edit, deactivate, and reactivate roster personnel."
+)
 
 
 def rerun() -> None:
     st.rerun()
+
+
+def service_type_to_database(
+    value: str,
+) -> str | None:
+    if value in {"CBT", "SVC"}:
+        return value
+    return None
+
+
+def service_type_from_database(
+    value: str | None,
+) -> str:
+    normalised = str(value or "").strip().upper()
+    if normalised in {"CBT", "SVC"}:
+        return normalised
+    return "Not set"
+
+
+def cover_fitness_to_database(
+    value: str,
+) -> bool | None:
+    if value == "Cover fit":
+        return True
+    if value == "Not cover fit":
+        return False
+    return None
+
+
+def cover_fitness_from_database(
+    value: bool | None,
+) -> str:
+    if value is True:
+        return "Cover fit"
+    if value is False:
+        return "Not cover fit"
+    return "Not set"
 
 
 def role_selector(
@@ -64,26 +110,45 @@ def render_summary(records: list[Any]) -> None:
 def render_add_person_form() -> None:
     with st.expander("Add new personnel", expanded=False):
         st.caption(
-            "Centre and leaving-date controls update immediately. "
             "Nothing is saved until Create personnel is clicked."
         )
 
         left, middle, right = st.columns(3)
 
         with left:
+            st.markdown("#### Basic information")
             name = st.text_input("Name", key="add_name")
             rank = st.text_input("Rank", key="add_rank")
-            centre = st.selectbox("Centre", ["PT", "RH"], key="add_centre")
+            centre = st.selectbox(
+                "Centre",
+                ["PT", "RH"],
+                key="add_centre",
+            )
+            department = st.text_input(
+                "Department",
+                key="add_department",
+            )
 
         with middle:
-            department = st.text_input("Department", key="add_department")
+            st.markdown("#### Operational status")
             ampt_status = st.selectbox(
                 "AMPT status",
                 ["PASS", "FAIL"],
                 key="add_ampt_status",
             )
+            service_type_label = st.selectbox(
+                "Service type",
+                SERVICE_TYPE_OPTIONS,
+                key="add_service_type",
+            )
+            cover_fitness_label = st.selectbox(
+                "Cover fitness",
+                COVER_FITNESS_OPTIONS,
+                key="add_cover_fitness",
+            )
 
         with right:
+            st.markdown("#### Planning")
             has_leaving_date = st.checkbox(
                 "Set leaving date",
                 key="add_has_leaving_date",
@@ -108,7 +173,11 @@ def render_add_person_form() -> None:
             key_prefix=f"add_role_{centre}",
         )
 
-        if st.button("Create personnel", type="primary", key="create_personnel"):
+        if st.button(
+            "Create personnel",
+            type="primary",
+            key="create_personnel",
+        ):
             try:
                 create_person(
                     name=name,
@@ -116,7 +185,17 @@ def render_add_person_form() -> None:
                     centre=centre,
                     department=department,
                     ampt_status=ampt_status,
-                    leaving_date=leaving_date_value if has_leaving_date else None,
+                    service_type=service_type_to_database(
+                        service_type_label
+                    ),
+                    is_cover_fit=cover_fitness_to_database(
+                        cover_fitness_label
+                    ),
+                    leaving_date=(
+                        leaving_date_value
+                        if has_leaving_date
+                        else None
+                    ),
                     display_order=int(display_order),
                     eligible_roles=selected_roles,
                 )
@@ -127,114 +206,77 @@ def render_add_person_form() -> None:
                 rerun()
 
 
-def record_label(record: Any) -> str:
-    person = record.person
-    rank = person.rank.strip() if person.rank else "No rank"
-    return f"{person.name} · {rank} · {person.centre}"
+def render_active_personnel(
+    records: list[Any],
+) -> None:
+    st.subheader("Active personnel")
 
-
-def render_personnel_browser(records: list[Any]) -> None:
-    active_records = [r for r in records if r.person.is_active]
+    active_records = [
+        r for r in records
+        if r.person.is_active
+    ]
 
     if not active_records:
         st.info("No active personnel records found.")
         return
 
-    st.subheader("Active personnel")
+    search_term = st.text_input(
+        "Search active personnel",
+        key="active_person_search",
+    ).strip().lower()
 
-    browser_col, editor_col = st.columns([1, 2.4], gap="large")
-
-    with browser_col:
-        search_term = st.text_input(
-            "Search",
-            placeholder="Name, rank, centre, department...",
-            key="active_person_search",
-        ).strip().lower()
-
-        centre_filter = st.segmented_control(
-            "Centre",
-            options=["All", "PT", "RH"],
-            default="All",
-            key="personnel_centre_filter",
+    filtered_records = [
+        r
+        for r in active_records
+        if (
+            not search_term
+            or search_term in r.person.name.lower()
+            or search_term in r.person.rank.lower()
+            or search_term in r.person.centre.lower()
+            or search_term in r.person.department.lower()
+            or search_term in str(
+                r.person.service_type or ""
+            ).lower()
         )
+    ]
 
-        filtered_records = [
-            record
-            for record in active_records
-            if (
-                (centre_filter == "All" or record.person.centre == centre_filter)
-                and (
-                    not search_term
-                    or search_term in record.person.name.lower()
-                    or search_term in record.person.rank.lower()
-                    or search_term in record.person.centre.lower()
-                    or search_term in record.person.department.lower()
-                )
-            )
-        ]
+    if not filtered_records:
+        st.warning(
+            "No active personnel match the search."
+        )
+        return
 
-        st.caption(f"{len(filtered_records)} personnel shown")
+    label_to_record = {
+        f"{r.person.name} ({r.person.centre})": r
+        for r in filtered_records
+    }
 
-        if not filtered_records:
-            st.warning("No active personnel match the current filters.")
-            return
-
-        valid_ids = {str(record.id) for record in filtered_records}
-        selected_id = st.session_state.get("selected_personnel_id")
-
-        if selected_id not in valid_ids:
-            selected_id = str(filtered_records[0].id)
-            st.session_state["selected_personnel_id"] = selected_id
-
-        with st.container(height=560, border=True):
-            for record in filtered_records:
-                person = record.person
-                is_selected = str(record.id) == selected_id
-
-                label = (
-                    f"● {person.name}\n"
-                    f"{person.rank or 'No rank'} · {person.centre}"
-                    if is_selected
-                    else (
-                        f"{person.name}\n"
-                        f"{person.rank or 'No rank'} · {person.centre}"
-                    )
-                )
-
-                if st.button(
-                    label,
-                    key=f"select_person_{record.id}",
-                    use_container_width=True,
-                    type="primary" if is_selected else "secondary",
-                ):
-                    st.session_state["selected_personnel_id"] = str(record.id)
-                    rerun()
-
-    selected_record = next(
-        (
-            record
-            for record in filtered_records
-            if str(record.id) == st.session_state["selected_personnel_id"]
-        ),
-        filtered_records[0],
+    selected_label = st.selectbox(
+        "Select personnel to edit",
+        list(label_to_record),
+        key="active_person_selector",
     )
 
-    with editor_col:
-        render_edit_form(selected_record)
+    render_edit_form(
+        label_to_record[selected_label]
+    )
 
 
-def render_edit_form(record: Any) -> None:
+def render_edit_form(
+    record: Any,
+) -> None:
     person = record.person
 
+    st.markdown("---")
     st.subheader(f"Edit: {person.name}")
     st.caption(
-        "Centre and leaving-date controls update immediately. "
         "Changes are saved only after Save changes is clicked."
     )
 
     left, middle, right = st.columns(3)
 
     with left:
+        st.markdown("#### Basic information")
         name = st.text_input(
             "Name",
             value=person.name,
@@ -251,21 +293,55 @@ def render_edit_form(record: Any) -> None:
             index=0 if person.centre == "PT" else 1,
             key=f"edit_centre_{record.id}",
         )
-
-    with middle:
         department = st.text_input(
             "Department",
             value=person.department,
             key=f"edit_department_{record.id}",
         )
+
+    with middle:
+        st.markdown("#### Operational status")
         ampt_status = st.selectbox(
             "AMPT status",
             ["PASS", "FAIL"],
-            index=0 if person.ampt_status == "PASS" else 1,
+            index=(
+                0
+                if person.ampt_status == "PASS"
+                else 1
+            ),
             key=f"edit_ampt_{record.id}",
         )
 
+        current_service_type = (
+            service_type_from_database(
+                person.service_type
+            )
+        )
+        service_type_label = st.selectbox(
+            "Service type",
+            SERVICE_TYPE_OPTIONS,
+            index=SERVICE_TYPE_OPTIONS.index(
+                current_service_type
+            ),
+            key=f"edit_service_type_{record.id}",
+        )
+
+        current_cover_fitness = (
+            cover_fitness_from_database(
+                person.is_cover_fit
+            )
+        )
+        cover_fitness_label = st.selectbox(
+            "Cover fitness",
+            COVER_FITNESS_OPTIONS,
+            index=COVER_FITNESS_OPTIONS.index(
+                current_cover_fitness
+            ),
+            key=f"edit_cover_fitness_{record.id}",
+        )
+
     with right:
+        st.markdown("#### Planning")
         has_leaving_date = st.checkbox(
             "Set leaving date",
             value=person.leaving_date is not None,
@@ -273,7 +349,10 @@ def render_edit_form(record: Any) -> None:
         )
         leaving_date_value = st.date_input(
             "Leaving date",
-            value=person.leaving_date or date.today(),
+            value=(
+                person.leaving_date
+                or date.today()
+            ),
             disabled=not has_leaving_date,
             key=f"edit_leaving_date_{record.id}",
         )
@@ -287,98 +366,134 @@ def render_edit_form(record: Any) -> None:
 
     selected_roles = role_selector(
         centre=centre,
-        selected_roles=set(person.eligible_roles),
-        key_prefix=f"edit_role_{record.id}_{centre}",
+        selected_roles=set(
+            person.eligible_roles
+        ),
+        key_prefix=(
+            f"edit_role_{record.id}_{centre}"
+        ),
     )
 
-    action_left, action_right = st.columns([1, 1])
+    if st.button(
+        "Save changes",
+        type="primary",
+        key=f"save_person_{record.id}",
+    ):
+        try:
+            update_person(
+                personnel_id=record.id,
+                name=name,
+                rank=rank,
+                centre=centre,
+                department=department,
+                ampt_status=ampt_status,
+                service_type=service_type_to_database(
+                    service_type_label
+                ),
+                is_cover_fit=cover_fitness_to_database(
+                    cover_fitness_label
+                ),
+                leaving_date=(
+                    leaving_date_value
+                    if has_leaving_date
+                    else None
+                ),
+                display_order=int(display_order),
+                eligible_roles=selected_roles,
+            )
+        except PersonnelRepositoryError as exc:
+            st.error(str(exc))
+        else:
+            st.success(
+                f"{name.strip()} was updated."
+            )
+            rerun()
 
-    with action_left:
-        if st.button(
-            "Save changes",
-            type="primary",
-            key=f"save_person_{record.id}",
-            use_container_width=True,
-        ):
-            try:
-                update_person(
-                    personnel_id=record.id,
-                    name=name,
-                    rank=rank,
-                    centre=centre,
-                    department=department,
-                    ampt_status=ampt_status,
-                    leaving_date=leaving_date_value if has_leaving_date else None,
-                    display_order=int(display_order),
-                    eligible_roles=selected_roles,
-                )
-            except PersonnelRepositoryError as exc:
-                st.error(str(exc))
-            else:
-                st.success(f"{name.strip()} was updated.")
-                rerun()
+    st.markdown("#### Status")
+    confirm_deactivate = st.checkbox(
+        "I understand this will remove the person "
+        "from future roster generation.",
+        key=f"confirm_deactivate_{record.id}",
+    )
 
-    with action_right:
-        confirm_deactivate = st.checkbox(
-            "Confirm deactivation",
-            key=f"confirm_deactivate_{record.id}",
-        )
-
-        if st.button(
-            "Deactivate personnel",
-            disabled=not confirm_deactivate,
-            key=f"deactivate_{record.id}",
-            use_container_width=True,
-        ):
-            try:
-                deactivate_person(record.id)
-            except PersonnelRepositoryError as exc:
-                st.error(str(exc))
-            else:
-                st.session_state.pop("selected_personnel_id", None)
-                st.success(f"{person.name} was deactivated.")
-                rerun()
+    if st.button(
+        "Deactivate personnel",
+        disabled=not confirm_deactivate,
+        key=f"deactivate_{record.id}",
+    ):
+        try:
+            deactivate_person(record.id)
+        except PersonnelRepositoryError as exc:
+            st.error(str(exc))
+        else:
+            st.success(
+                f"{person.name} was deactivated."
+            )
+            rerun()
 
 
-def render_inactive_personnel(records: list[Any]) -> None:
+def render_inactive_personnel(
+    records: list[Any],
+) -> None:
     st.markdown("---")
     st.subheader("Inactive personnel")
 
-    inactive_records = [r for r in records if not r.person.is_active]
+    inactive_records = [
+        r for r in records
+        if not r.person.is_active
+    ]
+
     if not inactive_records:
         st.info("No inactive personnel records.")
         return
 
-    with st.expander(f"View inactive personnel ({len(inactive_records)})"):
-        for record in inactive_records:
-            person = record.person
-            left, right = st.columns([4, 1])
+    for record in inactive_records:
+        person = record.person
+        left, right = st.columns([4, 1])
 
-            with left:
-                st.write(
-                    f"**{person.name}** — "
-                    f"{person.rank or 'No rank'} — "
-                    f"{person.centre}"
+        with left:
+            service_type = (
+                person.service_type
+                or "Not set"
+            )
+            cover_fitness = (
+                cover_fitness_from_database(
+                    person.is_cover_fit
                 )
+            )
+            st.write(
+                f"**{person.name}** — "
+                f"{person.rank or 'No rank'} — "
+                f"{person.centre} — "
+                f"{service_type} — "
+                f"{cover_fitness}"
+            )
 
-            with right:
-                if st.button("Reactivate", key=f"reactivate_{record.id}"):
-                    try:
-                        reactivate_person(record.id)
-                    except PersonnelRepositoryError as exc:
-                        st.error(str(exc))
-                    else:
-                        st.success(f"{person.name} was reactivated.")
-                        rerun()
+        with right:
+            if st.button(
+                "Reactivate",
+                key=f"reactivate_{record.id}",
+            ):
+                try:
+                    reactivate_person(record.id)
+                except PersonnelRepositoryError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(
+                        f"{person.name} was reactivated."
+                    )
+                    rerun()
 
 
 try:
-    personnel_records = load_personnel_records(include_inactive=True)
+    personnel_records = load_personnel_records(
+        include_inactive=True
+    )
 except PersonnelRepositoryError as exc:
     st.error(str(exc))
     st.stop()
 
 render_summary(personnel_records)
 render_add_person_form()
-render_personnel_browser(personnel_records)
+render_active_personnel(personnel_records)
 render_inactive_personnel(personnel_records)
