@@ -207,6 +207,7 @@ def render_manpower_calendar(
     month_last_day: date,
     daily_entries: dict[date, list[StoredAvailabilityEntry]],
     total_personnel: int,
+    centre: str = "Combined",
 ) -> None:
     """Render a compact month calendar shaded by unavailable headcount."""
     if total_personnel <= 0:
@@ -223,6 +224,7 @@ def render_manpower_calendar(
             {
                 entry.personnel_id
                 for entry in daily_entries.get(current_date, [])
+                if centre == "Combined" or entry.centre == centre
             }
         )
         unavailable_ratio = unavailable_count / total_personnel
@@ -235,7 +237,7 @@ def render_manpower_calendar(
             level = "low"
 
         cells.append(
-            "<td class='day {level}' title='{date}: {count} unavailable'>"
+            "<td class='day {level}' title='{date}: {count} unavailable ({centre})'>"
             "<span class='day-number'>{day}</span>"
             "<span class='day-count'>{count}</span>"
             "</td>".format(
@@ -243,6 +245,7 @@ def render_manpower_calendar(
                 date=current_date.strftime("%d %B %Y"),
                 count=unavailable_count,
                 day=current_date.day,
+                centre=centre,
             )
         )
 
@@ -773,16 +776,32 @@ with dashboard_tab:
 
     st.subheader("Monthly manpower heatmap")
 
+    heatmap_centre = st.segmented_control(
+        "Heatmap centre",
+        options=["Combined", "PT", "RH"],
+        default="Combined",
+        key="dashboard_heatmap_centre",
+    )
+
+    if heatmap_centre == "PT":
+        heatmap_total_personnel = len(pt_personnel)
+    elif heatmap_centre == "RH":
+        heatmap_total_personnel = len(rh_personnel)
+    else:
+        heatmap_total_personnel = total_active_personnel
+
     st.caption(
-        "Each date shows the number of personnel marked unavailable. "
-        "Darker warning colours indicate a larger share of total manpower."
+        f"Showing {heatmap_centre} availability. Each date shows the number "
+        "of personnel marked unavailable. Darker warning colours indicate "
+        "a larger share of that centre's manpower."
     )
 
     render_manpower_calendar(
         selected_month=selected_month,
         month_last_day=month_last_day,
         daily_entries=daily_entries,
-        total_personnel=total_active_personnel,
+        total_personnel=heatmap_total_personnel,
+        centre=heatmap_centre,
     )
 
     st.divider()
