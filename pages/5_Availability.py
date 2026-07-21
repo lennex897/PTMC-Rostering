@@ -200,6 +200,150 @@ def matrix_values_by_person_and_date(
 
     return values
 
+
+def render_manpower_calendar(
+    *,
+    selected_month: date,
+    month_last_day: date,
+    daily_entries: dict[date, list[StoredAvailabilityEntry]],
+    total_personnel: int,
+) -> None:
+    """Render a compact month calendar shaded by unavailable headcount."""
+    if total_personnel <= 0:
+        st.info("No active personnel are available for this month.")
+        return
+
+    first_weekday = selected_month.weekday()
+    month_dates = dates_between(selected_month, month_last_day)
+
+    cells: list[str] = ["<td class='empty'></td>"] * first_weekday
+
+    for current_date in month_dates:
+        unavailable_count = len(
+            {
+                entry.personnel_id
+                for entry in daily_entries.get(current_date, [])
+            }
+        )
+        unavailable_ratio = unavailable_count / total_personnel
+
+        if unavailable_ratio > 0.20:
+            level = "high"
+        elif unavailable_ratio > 0.10:
+            level = "medium"
+        else:
+            level = "low"
+
+        cells.append(
+            "<td class='day {level}' title='{date}: {count} unavailable'>"
+            "<span class='day-number'>{day}</span>"
+            "<span class='day-count'>{count}</span>"
+            "</td>".format(
+                level=level,
+                date=current_date.strftime("%d %B %Y"),
+                count=unavailable_count,
+                day=current_date.day,
+            )
+        )
+
+    while len(cells) % 7:
+        cells.append("<td class='empty'></td>")
+
+    rows = [
+        "<tr>" + "".join(cells[index:index + 7]) + "</tr>"
+        for index in range(0, len(cells), 7)
+    ]
+
+    calendar_html = f"""
+    <style>
+        .manpower-calendar {{
+            width: 100%;
+            max-width: 760px;
+            border-collapse: separate;
+            border-spacing: 5px;
+            table-layout: fixed;
+        }}
+        .manpower-calendar th {{
+            text-align: center;
+            font-size: 0.78rem;
+            font-weight: 600;
+            opacity: 0.7;
+            padding-bottom: 2px;
+        }}
+        .manpower-calendar td {{
+            height: 58px;
+            border-radius: 8px;
+            padding: 6px 7px;
+            vertical-align: top;
+        }}
+        .manpower-calendar .empty {{
+            background: transparent;
+        }}
+        .manpower-calendar .day {{
+            border: 1px solid rgba(128, 128, 128, 0.22);
+        }}
+        .manpower-calendar .low {{
+            background: rgba(46, 160, 67, 0.18);
+        }}
+        .manpower-calendar .medium {{
+            background: rgba(210, 153, 34, 0.24);
+        }}
+        .manpower-calendar .high {{
+            background: rgba(248, 81, 73, 0.24);
+        }}
+        .manpower-calendar .day-number {{
+            display: block;
+            font-size: 0.82rem;
+            font-weight: 700;
+            line-height: 1;
+        }}
+        .manpower-calendar .day-count {{
+            display: block;
+            text-align: center;
+            font-size: 1.08rem;
+            font-weight: 700;
+            margin-top: 8px;
+        }}
+        .manpower-legend {{
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+            font-size: 0.82rem;
+            opacity: 0.84;
+        }}
+        .manpower-legend span::before {{
+            content: "";
+            display: inline-block;
+            width: 11px;
+            height: 11px;
+            border-radius: 3px;
+            margin-right: 5px;
+            vertical-align: -1px;
+        }}
+        .legend-low::before {{ background: rgba(46, 160, 67, 0.55); }}
+        .legend-medium::before {{ background: rgba(210, 153, 34, 0.65); }}
+        .legend-high::before {{ background: rgba(248, 81, 73, 0.65); }}
+    </style>
+    <table class="manpower-calendar">
+        <thead>
+            <tr>
+                <th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th>
+                <th>Fri</th><th>Sat</th><th>Sun</th>
+            </tr>
+        </thead>
+        <tbody>{''.join(rows)}</tbody>
+    </table>
+    <div class="manpower-legend">
+        <span class="legend-low">0–10% unavailable</span>
+        <span class="legend-medium">&gt;10–20% unavailable</span>
+        <span class="legend-high">&gt;20% unavailable</span>
+    </div>
+    """
+
+    st.markdown(calendar_html, unsafe_allow_html=True)
+
+
 @st.cache_data(ttl=30)
 def load_cached_availability_codes() -> list[str]:
     """Load active availability codes from Supabase."""
@@ -627,88 +771,18 @@ with dashboard_tab:
 
     st.divider()
 
-    st.subheader("Daily unavailable personnel")
+    st.subheader("Monthly manpower heatmap")
 
-    all_month_dates = dates_between(
-        selected_month,
-        month_last_day,
+    st.caption(
+        "Each date shows the number of personnel marked unavailable. "
+        "Darker warning colours indicate a larger share of total manpower."
     )
 
-    daily_summary_rows = []
-
-    for current_date in all_month_dates:
-        entries_for_date = daily_entries.get(
-            current_date,
-            [],
-        )
-
-        unavailable_ids = {
-            entry.personnel_id
-            for entry in entries_for_date
-        }
-
-        unavailable_pt_ids = {
-            entry.personnel_id
-            for entry in entries_for_date
-            if entry.centre == "PT"
-        }
-
-        unavailable_rh_ids = {
-            entry.personnel_id
-            for entry in entries_for_date
-            if entry.centre == "RH"
-        }
-
-        daily_summary_rows.append(
-            {
-                "Date": current_date,
-                "Day": current_date.strftime(
-                    "%a"
-                ),
-                "Unavailable": len(
-                    unavailable_ids
-                ),
-                "Available": (
-                    total_active_personnel
-                    - len(unavailable_ids)
-                ),
-                "PT unavailable": len(
-                    unavailable_pt_ids
-                ),
-                "PT available": (
-                    len(pt_personnel)
-                    - len(unavailable_pt_ids)
-                ),
-                "RH unavailable": len(
-                    unavailable_rh_ids
-                ),
-                "RH available": (
-                    len(rh_personnel)
-                    - len(unavailable_rh_ids)
-                ),
-            }
-        )
-
-    st.line_chart(
-        daily_summary_rows,
-        x="Date",
-        y=[
-            "Unavailable",
-            "PT unavailable",
-            "RH unavailable",
-        ],
-    )
-
-    st.dataframe(
-        daily_summary_rows,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Date": st.column_config.DateColumn(
-                "Date",
-                format="DD/MM/YYYY",
-            ),
-        },
+    render_manpower_calendar(
+        selected_month=selected_month,
+        month_last_day=month_last_day,
+        daily_entries=daily_entries,
+        total_personnel=total_active_personnel,
     )
 
     st.divider()
