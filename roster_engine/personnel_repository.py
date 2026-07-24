@@ -542,6 +542,7 @@ def update_person(
     centre: str,
     department: str,
     ampt_status: str,
+    service_type: str,
     is_cover_fit: bool | None,
     leaving_date: date | None,
     display_order: int,
