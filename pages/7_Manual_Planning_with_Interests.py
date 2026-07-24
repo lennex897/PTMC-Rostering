@@ -395,93 +395,115 @@ with cover_tab:
 with interest_tab:
     st.subheader("Record PTMC overnight interest")
     st.caption(
-        "Duty interest is a soft preference, not a guaranteed assignment. "
-        "The generator should only honour it when the final team remains feasible."
+        "PTMC overnight interest is a soft preference, not a guaranteed assignment. "
+        "The generator should only honour it for eligible overnight roles when the final team remains feasible."
     )
 
-    with st.form("duty_interest_form"):
-        c1, c2, c3 = st.columns([1.1, 1.6, 1.3])
+    c1, c2, c3 = st.columns([1.1, 1.6, 1.3])
 
-        with c1:
-            interest_date = st.date_input(
-                "Date", value=selected_month, min_value=selected_month,
-                max_value=selected_month_end, format="DD/MM/YYYY",
-                key="duty_interest_date",
-            )
-
-        with c2:
-            interest_person = st.selectbox(
-                "Personnel", all_person_names, key="duty_interest_person"
-            )
-
-        selected_person_record = person_by_name[interest_person]
-        actual_eligible_roles = eligible_overnight_roles(
-            selected_person_record
+    with c1:
+        interest_date = st.date_input(
+            "Date",
+            value=selected_month,
+            min_value=selected_month,
+            max_value=selected_month_end,
+            format="DD/MM/YYYY",
+            key="duty_interest_date",
         )
 
-        with c3:
-            preferred_role_label = st.selectbox(
-                "Preferred overnight role",
-                [
-                    "Any eligible overnight role",
-                    *actual_eligible_roles,
-                ],
-                key="duty_interest_role",
-                help=(
-                    "Only roles assigned to this person in Personnel "
-                    "Management are shown. PT CS/B is excluded because "
-                    "this interest is for PTMC overnight duty only."
-                ),
-            )
-
-        if actual_eligible_roles:
-            st.caption(
-                "Eligible overnight roles: "
-                + ", ".join(actual_eligible_roles)
-            )
-        else:
-            st.warning(
-                f"{interest_person} currently has no eligible overnight "
-                "roles configured. An interest can be recorded, but the "
-                "generator will have no overnight role to assign."
-            )
-
-        interest_remarks = st.text_input(
-            "Remarks", placeholder="Optional reason or note",
-            key="duty_interest_remarks",
+    with c2:
+        interest_person = st.selectbox(
+            "Personnel",
+            all_person_names,
+            key="duty_interest_person",
         )
 
-        availability_code = get_availability_code(
-            availability_rows, interest_person, interest_date
-        )
-        if availability_code:
-            st.warning(
-                f"{interest_person} has availability code {availability_code} "
-                f"on {interest_date:%d %b %Y}. The generator should ignore "
-                "this interest if that code blocks duty."
-            )
+    selected_person_record = person_by_name[interest_person]
+    actual_eligible_roles = eligible_overnight_roles(
+        selected_person_record
+    )
 
-        submit_interest = st.form_submit_button(
-            "Add duty interest", type="primary", use_container_width=True
+    with c3:
+        preferred_role_label = st.selectbox(
+            "Preferred overnight role",
+            [
+                "Any eligible overnight role",
+                *actual_eligible_roles,
+            ],
+            key=f"duty_interest_role_{interest_person}",
+            help=(
+                "Only roles assigned to this person in Personnel "
+                "Management are shown. PT CS/B is excluded because "
+                "this interest is for PTMC overnight duty only."
+            ),
         )
+
+    if actual_eligible_roles:
+        st.caption(
+            "Eligible overnight roles: "
+            + ", ".join(actual_eligible_roles)
+        )
+    else:
+        st.warning(
+            f"{interest_person} currently has no eligible overnight "
+            "roles configured. An interest can be recorded, but the "
+            "generator will have no overnight role to assign."
+        )
+
+    interest_remarks = st.text_input(
+        "Remarks",
+        placeholder="Optional reason or note",
+        key="duty_interest_remarks",
+    )
+
+    availability_code = get_availability_code(
+        availability_rows,
+        interest_person,
+        interest_date,
+    )
+
+    if availability_code:
+        st.warning(
+            f"{interest_person} has availability code {availability_code} "
+            f"on {interest_date:%d %b %Y}. The generator should ignore "
+            "this interest if that code blocks duty."
+        )
+
+    submit_interest = st.button(
+        "Add PTMC overnight interest",
+        type="primary",
+        use_container_width=True,
+        key="add_duty_interest_button",
+    )
 
     if submit_interest:
         preferred_role = (
-            None if preferred_role_label == "Any eligible overnight role"
+            None
+            if preferred_role_label == "Any eligible overnight role"
             else preferred_role_label
         )
+
         payload = {
             "roster_month_id": roster_month_id,
-            "personnel_id": str(person_by_name[interest_person]["id"]),
+            "personnel_id": str(
+                person_by_name[interest_person]["id"]
+            ),
             "interest_date": interest_date.isoformat(),
             "preferred_role": preferred_role,
             "remarks": interest_remarks.strip() or None,
         }
+
         try:
-            get_supabase().table("roster_duty_interests").insert(payload).execute()
+            (
+                get_supabase()
+                .table("roster_duty_interests")
+                .insert(payload)
+                .execute()
+            )
         except Exception as exc:
             st.error(
-                "Unable to save PTMC overnight interest. The same interest may already exist.\n\n"
+                "Unable to save PTMC overnight interest. "
+                "The same interest may already exist.\n\n"
                 f"{exc}"
             )
         else:
@@ -496,14 +518,21 @@ with interest_tab:
         st.info("No PTMC overnight interests have been recorded.")
     else:
         rows = []
+
         for item in duty_interests:
             p = item.get("personnel") or {}
+
             rows.append({
                 "ID": item["id"],
-                "Date": date.fromisoformat(str(item["interest_date"])),
+                "Date": date.fromisoformat(
+                    str(item["interest_date"])
+                ),
                 "Personnel": p.get("name") or "Unknown",
                 "Centre": p.get("centre") or "",
-                "Preference": item.get("preferred_role") or "Any eligible overnight role",
+                "Preference": (
+                    item.get("preferred_role")
+                    or "Any eligible overnight role"
+                ),
                 "Remarks": item.get("remarks") or "",
             })
 
@@ -513,35 +542,51 @@ with interest_tab:
             hide_index=True,
             column_config={
                 "ID": None,
-                "Date": st.column_config.DateColumn("Date", format="DD MMM"),
+                "Date": st.column_config.DateColumn(
+                    "Date",
+                    format="DD MMM",
+                ),
             },
         )
 
-        interest_lookup = {str(item["id"]): item for item in duty_interests}
+        interest_lookup = {
+            str(item["id"]): item
+            for item in duty_interests
+        }
+
         delete_interest_id = st.selectbox(
             "Select overnight interest to delete",
             options=list(interest_lookup),
             format_func=lambda item_id: (
                 f"{interest_lookup[item_id]['interest_date']} — "
                 f"{(interest_lookup[item_id].get('personnel') or {}).get('name', 'Unknown')} — "
-                f"{interest_lookup[item_id].get('preferred_role') or 'Any eligible duty'}"
+                f"{interest_lookup[item_id].get('preferred_role') or 'Any eligible overnight role'}"
             ),
             key="delete_interest_selector",
         )
+
         confirm_interest_delete = st.checkbox(
-            "Confirm overnight interest deletion", key="confirm_interest_delete"
+            "Confirm overnight interest deletion",
+            key="confirm_interest_delete",
         )
+
         if st.button(
             "Delete selected duty interest",
             disabled=not confirm_interest_delete,
             key="delete_interest_button",
         ):
-            get_supabase().table("roster_duty_interests").delete().eq(
-                "id", delete_interest_id
-            ).execute()
+            (
+                get_supabase()
+                .table("roster_duty_interests")
+                .delete()
+                .eq("id", delete_interest_id)
+                .execute()
+            )
+
             clear_interest_cache()
             st.success("PTMC overnight interest deleted.")
             st.rerun()
+
 
 with review_tab:
     st.subheader("Locked assignments")
