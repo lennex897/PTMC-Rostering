@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from calendar import monthrange
-from collections import defaultdict
-from datetime import date, timedelta
-from math import ceil
+from datetime import date
 
 import streamlit as st
 
+from roster_engine.cover_repository import CoverRepository
 from roster_engine.database import get_supabase
 
 
@@ -51,13 +50,6 @@ def month_end(value: date) -> date:
     )
 
 
-def dates_between(start: date, end: date) -> list[date]:
-    return [
-        start + timedelta(days=i)
-        for i in range((end - start).days + 1)
-    ]
-
-
 @st.cache_data(ttl=30)
 def load_roster_months() -> list[dict]:
     response = (
@@ -95,45 +87,21 @@ def load_roster_months() -> list[dict]:
 def load_cover_types(
     *,
     include_inactive: bool = False,
-) -> list[dict]:
-    query = (
-        get_supabase()
-        .table("roster_cover_types")
-        .select(
-            "id,category,cover_type,points,default_session,"
-            "is_active,display_order,notes"
-        )
-        .order("display_order")
-        .order("category")
-        .order("cover_type")
+):
+    repository = CoverRepository(get_supabase())
+    return repository.list_cover_types(
+        include_inactive=include_inactive
     )
-
-    if not include_inactive:
-        query = query.eq("is_active", True)
-
-    response = query.execute()
-    return list(response.data or [])
 
 
 @st.cache_data(ttl=15)
 def load_cover_requirements(
     roster_month_id: str,
-) -> list[dict]:
-    response = (
-        get_supabase()
-        .table("roster_cover_requirements")
-        .select(
-            "id,roster_month_id,requesting_unit,cover_category,"
-            "cover_type,cover_type_id,points_snapshot,session,"
-            "start_date,end_date,personnel_required,mandatory,remarks"
-        )
-        .eq("roster_month_id", roster_month_id)
-        .order("start_date")
-        .order("requesting_unit")
-        .execute()
+):
+    repository = CoverRepository(get_supabase())
+    return repository.list_month_requirements(
+        roster_month_id
     )
-
-    return list(response.data or [])
 
 
 def clear_cover_type_cache() -> None:
@@ -144,36 +112,25 @@ def clear_cover_requirement_cache() -> None:
     load_cover_requirements.clear()
 
 
-def requirement_dates(row: dict) -> list[date]:
-    return dates_between(
-        date.fromisoformat(str(row["start_date"])),
-        date.fromisoformat(str(row["end_date"])),
-    )
-
-
-def requirement_points(
-    row: dict,
-    cover_type_lookup: dict[str, dict],
-) -> float:
-    snapshot = row.get("points_snapshot")
-    if snapshot is not None:
-        return float(snapshot)
-
-    type_id = row.get("cover_type_id")
-    if type_id and str(type_id) in cover_type_lookup:
-        return float(
-            cover_type_lookup[str(type_id)].get("points")
-            or 0.0
-        )
-
-    return 0.0
 
 
 try:
     roster_months = load_roster_months()
-    all_cover_types = load_cover_types(
-        include_inactive=True
-    )
+    all_cover_types = [
+        {
+            "id": item.id,
+            "category": item.category,
+            "cover_type": item.cover_type,
+            "points": item.points,
+            "default_session": item.default_session,
+            "is_active": item.is_active,
+            "display_order": item.display_order,
+            "notes": item.notes,
+        }
+        for item in load_cover_types(
+            include_inactive=True
+        )
+    ]
 except Exception as exc:
     st.error(
         "Unable to load Cover Planner data. Run the latest SQL "
@@ -223,9 +180,27 @@ st.session_state[
 ] = selected_month.isoformat()
 
 try:
-    requirements = load_cover_requirements(
+    stored_requirements = load_cover_requirements(
         roster_month_id
     )
+    requirements = [
+        {
+            "id": item.id,
+            "roster_month_id": item.roster_month_id,
+            "requesting_unit": item.requesting_unit,
+            "cover_category": item.cover_category,
+            "cover_type": item.cover_type,
+            "cover_type_id": item.cover_type_id,
+            "points": item.points,
+            "session": item.session,
+            "start_date": item.start_date,
+            "end_date": item.end_date,
+            "personnel_required": item.personnel_required,
+            "mandatory": item.mandatory,
+            "remarks": item.remarks,
+        }
+        for item in stored_requirements
+    ]
 except Exception as exc:
     st.error(
         "Unable to load cover requirements. "
@@ -257,34 +232,21 @@ for row in active_cover_types:
     ).append(row)
 
 
-expanded_slots = 0
-fc_daily_counts: dict[date, int] = defaultdict(int)
+cover_repository = CoverRepository(get_supabase())
+expanded_cover_slots = cover_repository.expand_daily_slots(
+    stored_requirements
+)
 
-for requirement in requirements:
-    quantity = int(
-        requirement["personnel_required"]
-    )
-    days = requirement_dates(
-        requirement
-    )
-
-    expanded_slots += (
-        len(days) * quantity
-    )
-
-    if (
-        str(requirement["cover_category"])
-        == "FC"
-    ):
-        for current_date in days:
-            fc_daily_counts[
-                current_date
-            ] += quantity
-
+expanded_slots = sum(
+    1
+    for slot in expanded_cover_slots
+    if not slot.is_reserve
+)
 
 derived_fc_reserves = sum(
-    ceil(count / 2)
-    for count in fc_daily_counts.values()
+    1
+    for slot in expanded_cover_slots
+    if slot.is_reserve
 )
 
 m1, m2, m3, m4 = st.columns(4)
@@ -505,10 +467,11 @@ with add_tab:
         )
 
         if category == "FC":
-            daily_reserves = ceil(
-                int(personnel_required)
-                / 2
-            )
+            # Mirrors CoverRepository.expand_daily_slots():
+            # ceil(active FC / 2) reserves per day.
+            daily_reserves = (
+                int(personnel_required) + 1
+            ) // 2
 
             reserve_slots = (
                 day_count
@@ -641,11 +604,9 @@ with planner_tab:
                 ]
             )
 
-            days = len(
-                requirement_dates(
-                    item
-                )
-            )
+            days = (
+                item["end_date"] - item["start_date"]
+            ).days + 1
 
             rows.append(
                 {
@@ -674,31 +635,10 @@ with planner_tab:
                             ),
                         )
                     ),
-                    "Start": (
-                        date.fromisoformat(
-                            str(
-                                item[
-                                    "start_date"
-                                ]
-                            )
-                        )
-                    ),
-                    "End": (
-                        date.fromisoformat(
-                            str(
-                                item[
-                                    "end_date"
-                                ]
-                            )
-                        )
-                    ),
+                    "Start": item["start_date"],
+                    "End": item["end_date"],
                     "Qty/day": quantity,
-                    "Points": (
-                        requirement_points(
-                            item,
-                            cover_type_lookup,
-                        )
-                    ),
+                    "Points": float(item["points"]),
                     "Active slots": (
                         days * quantity
                     ),
@@ -766,8 +706,8 @@ with planner_tab:
             format_func=lambda item_id: (
                 f"{requirement_by_id[item_id]['requesting_unit']} — "
                 f"{requirement_by_id[item_id]['cover_type']} — "
-                f"{requirement_by_id[item_id]['start_date']} to "
-                f"{requirement_by_id[item_id]['end_date']}"
+                f"{requirement_by_id[item_id]['start_date']:%d %b} to "
+                f"{requirement_by_id[item_id]['end_date']:%d %b}"
             ),
         )
 
@@ -827,97 +767,47 @@ with daily_tab:
         key="cover_daily_preview_date",
     )
 
-    daily_rows = []
-    active_fc = 0
+    preview_slots = [
+        slot
+        for slot in expanded_cover_slots
+        if slot.duty_date == preview_date
+    ]
 
-    for item in requirements:
-        if (
-            preview_date
-            not in requirement_dates(
-                item
-            )
-        ):
-            continue
+    grouped_daily_slots: dict[tuple, dict] = {}
 
-        quantity = int(
-            item["personnel_required"]
+    for slot in preview_slots:
+        key = (
+            slot.requesting_unit,
+            slot.cover_category,
+            slot.cover_type,
+            slot.session,
+            slot.points,
+            slot.mandatory,
+            slot.is_reserve,
         )
 
-        if (
-            str(
-                item["cover_category"]
-            )
-            == "FC"
-        ):
-            active_fc += quantity
-
-        daily_rows.append(
-            {
+        if key not in grouped_daily_slots:
+            grouped_daily_slots[key] = {
                 "Date": preview_date,
-                "Unit": (
-                    item[
-                        "requesting_unit"
-                    ]
+                "Unit": slot.requesting_unit,
+                "Category": CATEGORY_LABELS.get(
+                    slot.cover_category,
+                    slot.cover_category,
                 ),
-                "Category": (
-                    CATEGORY_LABELS.get(
-                        str(
-                            item[
-                                "cover_category"
-                            ]
-                        ),
-                        str(
-                            item[
-                                "cover_category"
-                            ]
-                        ),
-                    )
+                "Cover": slot.cover_type,
+                "Session": SESSION_LABELS.get(
+                    slot.session,
+                    slot.session,
                 ),
-                "Cover": (
-                    item["cover_type"]
-                ),
-                "Session": (
-                    SESSION_LABELS.get(
-                        str(item["session"]),
-                        str(item["session"]),
-                    )
-                ),
-                "Slots": quantity,
-                "Points each": (
-                    requirement_points(
-                        item,
-                        cover_type_lookup,
-                    )
-                ),
-                "Mandatory": bool(
-                    item["mandatory"]
-                ),
-                "Derived": False,
+                "Slots": 0,
+                "Points each": slot.points,
+                "Mandatory": slot.mandatory,
+                "Derived": slot.is_reserve,
             }
-        )
 
-    reserve_count = (
-        ceil(active_fc / 2)
-        if active_fc
-        else 0
-    )
+        grouped_daily_slots[key]["Slots"] += 1
 
-    if reserve_count:
-        daily_rows.append(
-            {
-                "Date": preview_date,
-                "Unit": (
-                    "SHARED FC RESERVE"
-                ),
-                "Category": "FC",
-                "Cover": "FC RESERVE",
-                "Session": "Full day",
-                "Slots": reserve_count,
-                "Points each": 0.0,
-                "Mandatory": True,
-                "Derived": True,
-            }
-        )
+    daily_rows = list(grouped_daily_slots.values())
 
     active_slots = sum(
         int(row["Slots"])

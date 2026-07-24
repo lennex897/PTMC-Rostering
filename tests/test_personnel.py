@@ -43,16 +43,15 @@ def test_placeholder_rows_are_not_people() -> None:
     assert "AE" not in names
 
 
-def test_bcf_detection() -> None:
+def test_legacy_workbook_loader_leaves_new_fields_unset() -> None:
     personnel = load_personnel(REFERENCE_WORKBOOK)
 
-    bcf_personnel = [
-        person
-        for person in personnel
-        if "(BCF)" in person.name
-    ]
-
+    assert personnel
     assert all(
-        person.is_bcf
-        for person in bcf_personnel
+        person.service_type is None
+        for person in personnel
+    )
+    assert all(
+        person.is_cover_fit is None
+        for person in personnel
     )

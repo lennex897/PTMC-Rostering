@@ -17,18 +17,36 @@ from roster_engine.requirements import (
 )
 
 
+PT_CORE_ROLES = {
+    "PT DM",
+    "PT CS1",
+    "PT CS2",
+    "PT SB1",
+    "PT AE",
+}
+
+
 def make_person(
     name: str,
     *,
     centre: str = "PT",
     department: str = "ALPHA",
+    eligible_roles: set[str] | None = None,
 ) -> Person:
+    if eligible_roles is None:
+        eligible_roles = (
+            set(PT_CORE_ROLES)
+            if centre == "PT"
+            else {"RH SB1", "RH SB2"}
+        )
+
     return Person(
         name=name,
         rank="CPL",
         centre=centre,
         department=department,
         ampt_status="PASS",
+        eligible_roles=eligible_roles,
     )
 
 
@@ -135,13 +153,19 @@ def test_leave_entries_are_used() -> None:
 
 
 def test_historical_assignments_affect_generation() -> None:
+    # Minimal settings still require all PT core roles, so provide enough
+    # personnel for 1 Aug while keeping one person blocked by the prior night.
     person_one = make_person(
         "CPL PERSON ONE",
     )
 
-    person_two = make_person(
-        "CPL PERSON TWO",
-    )
+    other_people = [
+        make_person(
+            f"CPL PERSON {number}",
+            department=f"DEPT {number}",
+        )
+        for number in range(2, 8)
+    ]
 
     historical_schedule = Schedule(
         assignments=[
@@ -159,7 +183,7 @@ def test_historical_assignments_affect_generation() -> None:
     result = generate_roster(
         personnel=[
             person_one,
-            person_two,
+            *other_people,
         ],
         availability_entries=[],
         settings=GenerationSettings(

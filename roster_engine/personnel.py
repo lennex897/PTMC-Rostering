@@ -46,7 +46,14 @@ def load_personnel(
     workbook_path: Path,
 ) -> list[Person]:
     """
-    Load all PT and RH personnel from the scheduling workbook.
+    Legacy workbook personnel loader.
+
+    This loader is retained for historical/reference workbook support.
+    Live personnel data for the application should come from Supabase.
+
+    The workbook does not contain the newer Supabase-managed fields
+    (service_type, is_cover_fit, or role eligibility), so those remain
+    unset/defaulted here.
     """
 
     if not workbook_path.exists():
@@ -70,12 +77,8 @@ def load_personnel(
 
         personnel: list[Person] = []
 
-        #
-        # PT Personnel
-        # Columns A:F
-        #
+        # PT Personnel — Columns A:F
         for row_number in range(3, worksheet.max_row + 1):
-
             name = normalise_text(
                 worksheet.cell(row_number, 1).value
             )
@@ -102,17 +105,12 @@ def load_personnel(
                     centre="PT",
                     department=department or "UNSPECIFIED",
                     ampt_status=ampt_status,
-                    is_bcf="(BCF)" in name,
                     leaving_date=leaving_date,
                 )
             )
 
-        #
-        # RH Personnel
-        # Columns I:N
-        #
+        # RH Personnel — Columns I:N
         for row_number in range(3, worksheet.max_row + 1):
-
             name = normalise_text(
                 worksheet.cell(row_number, 9).value
             )
@@ -139,7 +137,6 @@ def load_personnel(
                     centre="RH",
                     department=department or "UNSPECIFIED",
                     ampt_status=ampt_status,
-                    is_bcf=False,
                     leaving_date=leaving_date,
                 )
             )

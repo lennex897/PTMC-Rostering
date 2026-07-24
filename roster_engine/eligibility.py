@@ -4,39 +4,15 @@ from roster_engine.models import AvailabilityEntry, Person
 
 
 PT_ROLES = {
-    "PT DM",
-    "PT CS1",
-    "PT CS2",
-    "PT CS/B",
-    "PT SB1",
-    "PT SB2",
-    "PT AE",
+    "PT DM", "PT CS1", "PT CS2", "PT CS/B", "PT SB1", "PT SB2", "PT AE",
 }
-
 RH_ROLES = {
-    "RH DM",
-    "RH CS1",
-    "RH SB1",
-    "RH SB2",
-    "RH AE",
+    "RH DM", "RH CS1", "RH SB1", "RH SB2", "RH AE",
 }
-
-BCF_ROLES = {
-    "PT AE",
-    "PT SB1",
-    "PT SB2",
-}
+ROLES_BY_CENTRE = {"PT": PT_ROLES, "RH": RH_ROLES}
 
 BLOCKING_REASONS = {
-    "AL",
-    "OL",
-    "MA",
-    "MC",
-    "HL",
-    "WISDOM",
-    "SURGERY",
-    "OUTPRO",
-    "ORD",
+    "AL", "OL", "MA", "MC", "HL", "WISDOM", "SURGERY", "OUTPRO", "ORD",
 }
 
 
@@ -44,38 +20,22 @@ def normalise_role(role: str) -> str:
     return " ".join(role.strip().upper().split())
 
 
-def allowed_roles_for_person(
-    person: Person,
-) -> set[str]:
-    if not person.is_ampt_valid:
+def allowed_roles_for_person(person: Person) -> set[str]:
+    """Return configured roles, with AMPT/active/centre safety checks."""
+    if not person.is_active or not person.is_ampt_valid:
         return set()
 
     centre = person.centre.strip().upper()
+    centre_roles = ROLES_BY_CENTRE.get(centre)
+    if centre_roles is None:
+        return set()
 
     configured_roles = {
         normalise_role(role)
         for role in person.eligible_roles
+        if str(role).strip()
     }
-
-    if centre == "PT":
-        permitted_roles = (
-            BCF_ROLES
-            if person.is_bcf
-            else PT_ROLES
-        )
-
-    elif centre == "RH":
-        permitted_roles = RH_ROLES
-
-    else:
-        return set()
-
-    if configured_roles:
-        return configured_roles & permitted_roles
-
-    # Temporary fallback for personnel not yet loaded
-    # with explicit eligible_roles.
-    return set(permitted_roles)
+    return configured_roles & centre_roles
 
 
 def is_person_unavailable(
@@ -84,7 +44,6 @@ def is_person_unavailable(
     availability_entries: list[AvailabilityEntry],
 ) -> bool:
     person_name = person.name.strip().upper()
-
     return any(
         entry.person_name.strip().upper() == person_name
         and entry.unavailable_date == duty_date
@@ -93,13 +52,9 @@ def is_person_unavailable(
     )
 
 
-def has_left_unit(
-    person: Person,
-    duty_date: date,
-) -> bool:
+def has_left_unit(person: Person, duty_date: date) -> bool:
     if person.leaving_date is None:
         return False
-
     return duty_date >= person.leaving_date
 
 
@@ -109,21 +64,12 @@ def is_eligible_for_role(
     duty_date: date,
     availability_entries: list[AvailabilityEntry],
 ) -> bool:
-    normalised_role = normalise_role(role)
-
-    if normalised_role not in allowed_roles_for_person(person):
+    if normalise_role(role) not in allowed_roles_for_person(person):
         return False
-
-    if is_person_unavailable(
-        person,
-        duty_date,
-        availability_entries,
-    ):
+    if is_person_unavailable(person, duty_date, availability_entries):
         return False
-
     if has_left_unit(person, duty_date):
         return False
-
     return True
 
 

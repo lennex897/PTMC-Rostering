@@ -19,6 +19,10 @@ def make_person(
         centre="PT",
         department="ALPHA",
         ampt_status="PASS",
+        eligible_roles={
+            "PT DM",
+            "PT CS1",
+        },
     )
 
 
