@@ -130,12 +130,37 @@ def load_availability(roster_month_id: str) -> list[dict]:
     response = (
         get_supabase()
         .table("roster_availability")
-        .select("person_name,availability_date,code")
+        .select(
+            """
+            availability_date,
+            code,
+            personnel:roster_personnel!roster_availability_personnel_id_fkey(
+                name
+            )
+            """
+        )
         .eq("roster_month_id", roster_month_id)
         .execute()
     )
-    return list(response.data or [])
 
+    rows = []
+
+    for item in response.data or []:
+        personnel = item.get("personnel") or {}
+
+        person_name = personnel.get("name")
+        if not person_name:
+            continue
+
+        rows.append(
+            {
+                "person_name": str(person_name),
+                "availability_date": item.get("availability_date"),
+                "code": item.get("code"),
+            }
+        )
+
+    return rows
 
 def clear_manual_cache() -> None:
     load_manual_assignments.clear()
