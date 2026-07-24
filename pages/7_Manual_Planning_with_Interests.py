@@ -51,7 +51,7 @@ def load_personnel() -> list[dict]:
     response = (
         get_supabase()
         .table("roster_personnel")
-        .select("id,name,centre,is_active,is_cover_fit")
+        .select("id,name,centre,is_active,is_cover_fit,roster_personnel_roles(role)")
         .eq("is_active", True)
         .order("name")
         .execute()
@@ -148,6 +148,43 @@ def requirement_contains_date(requirement: dict, current_date: date) -> bool:
     return start <= current_date <= end
 
 
+def eligible_overnight_roles(person: dict) -> list[str]:
+    """
+    Return the selected person's actual eligible overnight roles.
+
+    roster_personnel_roles is the source of truth. Day-only CS/B is excluded
+    from PTMC overnight interest.
+    """
+    role_rows = person.get("roster_personnel_roles") or []
+    roles = []
+
+    for row in role_rows:
+        role = str(row.get("role") or "").strip().upper()
+        if not role:
+            continue
+
+        if role.endswith(" CS/B"):
+            continue
+
+        if role not in roles:
+            roles.append(role)
+
+    preferred_order = {
+        "DM": 0,
+        "CS1": 1,
+        "CS2": 2,
+        "SB1": 3,
+        "SB2": 4,
+        "AE": 5,
+    }
+
+    def sort_key(role: str) -> tuple[int, str]:
+        short_role = role.split(" ", 1)[1] if " " in role else role
+        return (preferred_order.get(short_role, 99), role)
+
+    return sorted(roles, key=sort_key)
+
+
 def get_availability_code(
     availability_rows: list[dict],
     person_name: str,
@@ -208,12 +245,12 @@ m3.metric(
     "Locked covers",
     sum(1 for r in manual_assignments if r["assignment_kind"] in ("COVER", "COVER_RESERVE")),
 )
-m4.metric("Duty interests", len(duty_interests))
+m4.metric("PTMC Overnight Interests", len(duty_interests))
 
 st.divider()
 
 duty_tab, cover_tab, interest_tab, review_tab = st.tabs(
-    ["Manual duties", "Manual covers", "Duty interest", "Review planning inputs"]
+    ["Manual duties", "Manual covers", "PTMC Overnight Interest", "Review planning inputs"]
 )
 
 with duty_tab:
@@ -356,7 +393,7 @@ with cover_tab:
                 st.rerun()
 
 with interest_tab:
-    st.subheader("Record duty interest")
+    st.subheader("Record PTMC overnight interest")
     st.caption(
         "Duty interest is a soft preference, not a guaranteed assignment. "
         "The generator should only honour it when the final team remains feasible."
@@ -377,11 +414,36 @@ with interest_tab:
                 "Personnel", all_person_names, key="duty_interest_person"
             )
 
+        selected_person_record = person_by_name[interest_person]
+        actual_eligible_roles = eligible_overnight_roles(
+            selected_person_record
+        )
+
         with c3:
             preferred_role_label = st.selectbox(
-                "Preferred role",
-                ["Any eligible duty", *DUTY_ROLES],
+                "Preferred overnight role",
+                [
+                    "Any eligible overnight role",
+                    *actual_eligible_roles,
+                ],
                 key="duty_interest_role",
+                help=(
+                    "Only roles assigned to this person in Personnel "
+                    "Management are shown. PT CS/B is excluded because "
+                    "this interest is for PTMC overnight duty only."
+                ),
+            )
+
+        if actual_eligible_roles:
+            st.caption(
+                "Eligible overnight roles: "
+                + ", ".join(actual_eligible_roles)
+            )
+        else:
+            st.warning(
+                f"{interest_person} currently has no eligible overnight "
+                "roles configured. An interest can be recorded, but the "
+                "generator will have no overnight role to assign."
             )
 
         interest_remarks = st.text_input(
@@ -405,7 +467,7 @@ with interest_tab:
 
     if submit_interest:
         preferred_role = (
-            None if preferred_role_label == "Any eligible duty"
+            None if preferred_role_label == "Any eligible overnight role"
             else preferred_role_label
         )
         payload = {
@@ -419,19 +481,19 @@ with interest_tab:
             get_supabase().table("roster_duty_interests").insert(payload).execute()
         except Exception as exc:
             st.error(
-                "Unable to save duty interest. The same interest may already exist.\n\n"
+                "Unable to save PTMC overnight interest. The same interest may already exist.\n\n"
                 f"{exc}"
             )
         else:
             clear_interest_cache()
-            st.success("Duty interest recorded.")
+            st.success("PTMC overnight interest recorded.")
             st.rerun()
 
     st.divider()
-    st.subheader("Duty interest for selected month")
+    st.subheader("PTMC Overnight Interest for selected month")
 
     if not duty_interests:
-        st.info("No duty interests have been recorded.")
+        st.info("No PTMC overnight interests have been recorded.")
     else:
         rows = []
         for item in duty_interests:
@@ -441,7 +503,7 @@ with interest_tab:
                 "Date": date.fromisoformat(str(item["interest_date"])),
                 "Personnel": p.get("name") or "Unknown",
                 "Centre": p.get("centre") or "",
-                "Preference": item.get("preferred_role") or "Any eligible duty",
+                "Preference": item.get("preferred_role") or "Any eligible overnight role",
                 "Remarks": item.get("remarks") or "",
             })
 
@@ -457,7 +519,7 @@ with interest_tab:
 
         interest_lookup = {str(item["id"]): item for item in duty_interests}
         delete_interest_id = st.selectbox(
-            "Select interest to delete",
+            "Select overnight interest to delete",
             options=list(interest_lookup),
             format_func=lambda item_id: (
                 f"{interest_lookup[item_id]['interest_date']} — "
@@ -467,7 +529,7 @@ with interest_tab:
             key="delete_interest_selector",
         )
         confirm_interest_delete = st.checkbox(
-            "Confirm duty interest deletion", key="confirm_interest_delete"
+            "Confirm overnight interest deletion", key="confirm_interest_delete"
         )
         if st.button(
             "Delete selected duty interest",
@@ -478,7 +540,7 @@ with interest_tab:
                 "id", delete_interest_id
             ).execute()
             clear_interest_cache()
-            st.success("Duty interest deleted.")
+            st.success("PTMC overnight interest deleted.")
             st.rerun()
 
 with review_tab:
@@ -516,10 +578,10 @@ with review_tab:
         )
 
     st.divider()
-    st.subheader("Duty interests")
+    st.subheader("PTMC Overnight Interests")
 
     if not duty_interests:
-        st.info("No duty interests have been recorded.")
+        st.info("No PTMC overnight interests have been recorded.")
     else:
         rows = []
         for item in duty_interests:
@@ -528,7 +590,7 @@ with review_tab:
                 "Date": date.fromisoformat(str(item["interest_date"])),
                 "Personnel": p.get("name") or "Unknown",
                 "Centre": p.get("centre") or "",
-                "Preference": item.get("preferred_role") or "Any eligible duty",
+                "Preference": item.get("preferred_role") or "Any eligible overnight role",
                 "Remarks": item.get("remarks") or "",
             })
         st.dataframe(
