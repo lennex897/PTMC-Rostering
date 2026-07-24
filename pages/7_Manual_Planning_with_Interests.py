@@ -255,40 +255,85 @@ duty_tab, cover_tab, interest_tab, review_tab = st.tabs(
 
 with duty_tab:
     st.subheader("Lock a duty assignment")
-    with st.form("manual_duty_form"):
-        c1, c2, c3, c4 = st.columns([1.1, 1.5, 1, 1])
-        with c1:
-            duty_date = st.date_input(
-                "Date", value=selected_month, min_value=selected_month,
-                max_value=selected_month_end, format="DD/MM/YYYY",
-                key="manual_duty_date",
-            )
-        with c2:
-            duty_person = st.selectbox("Personnel", all_person_names, key="manual_duty_person")
-        with c3:
-            duty_centre = st.selectbox("Centre", CENTRES, key="manual_duty_centre")
-        with c4:
-            duty_role = st.selectbox("Role", DUTY_ROLES, key="manual_duty_role")
 
-        allow_override = st.checkbox(
-            "Allow manual override if this conflicts with availability",
-            value=False,
-            key="manual_duty_override",
+    c1, c2, c3, c4 = st.columns([1.1, 1.5, 1, 1])
+
+    with c1:
+        duty_date = st.date_input(
+            "Date",
+            value=selected_month,
+            min_value=selected_month,
+            max_value=selected_month_end,
+            format="DD/MM/YYYY",
+            key="manual_duty_date",
         )
-        duty_remarks = st.text_input("Remarks", key="manual_duty_remarks")
 
-        availability_code = get_availability_code(
-            availability_rows, duty_person, duty_date
+    with c2:
+        duty_person = st.selectbox(
+            "Personnel",
+            all_person_names,
+            key="manual_duty_person",
         )
-        if availability_code:
-            st.warning(
-                f"{duty_person} has availability code {availability_code} "
-                f"on {duty_date:%d %b %Y}."
-            )
 
-        submit_duty = st.form_submit_button("Lock duty", type="primary", use_container_width=True)
+    with c3:
+        duty_centre = st.selectbox(
+            "Centre",
+            CENTRES,
+            key="manual_duty_centre",
+        )
 
-    if submit_duty:
+    with c4:
+        duty_role = st.selectbox(
+            "Role",
+            DUTY_ROLES,
+            key="manual_duty_role",
+        )
+
+    allow_override = st.checkbox(
+        "Allow manual override if this conflicts with availability",
+        value=False,
+        key="manual_duty_override",
+    )
+
+    duty_remarks = st.text_input(
+        "Remarks",
+        key="manual_duty_remarks",
+    )
+
+    availability_code = get_availability_code(
+        availability_rows,
+        duty_person,
+        duty_date,
+    )
+
+    existing_same_day = [
+        row
+        for row in manual_assignments
+        if (
+            row["personnel_name"] == duty_person
+            and str(row["assignment_date"]) == duty_date.isoformat()
+        )
+    ]
+
+    if availability_code:
+        st.warning(
+            f"{duty_person} has availability code {availability_code} "
+            f"on {duty_date:%d %b %Y}."
+        )
+
+    if existing_same_day:
+        st.warning(
+            f"{duty_person} already has "
+            f"{len(existing_same_day)} locked assignment(s) "
+            "on this date."
+        )
+
+    if st.button(
+        "Lock duty",
+        type="primary",
+        use_container_width=True,
+        key="lock_manual_duty_button",
+    ):
         payload = {
             "roster_month_id": roster_month_id,
             "personnel_name": duty_person,
@@ -303,13 +348,24 @@ with duty_tab:
             "allow_override": allow_override,
             "remarks": duty_remarks.strip() or None,
         }
-        get_supabase().table("roster_manual_assignments").insert(payload).execute()
-        clear_manual_cache()
-        st.success("Duty locked.")
-        st.rerun()
+
+        try:
+            (
+                get_supabase()
+                .table("roster_manual_assignments")
+                .insert(payload)
+                .execute()
+            )
+        except Exception as exc:
+            st.error(f"Unable to save manual duty: {exc}")
+        else:
+            clear_manual_cache()
+            st.success("Duty locked.")
+            st.rerun()
 
 with cover_tab:
     st.subheader("Lock a cover assignment")
+    st.caption("Selections and conflict warnings update immediately.")
 
     if not cover_requirements:
         st.info("No cover requirements exist for this month.")
