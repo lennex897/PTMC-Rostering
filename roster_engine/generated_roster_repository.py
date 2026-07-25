@@ -209,6 +209,82 @@ class GeneratedRosterRepository:
             for row in (response.data or [])
         ]
 
+    def update_assignment_person(
+        self,
+        *,
+        assignment_id: str,
+        personnel_id: str,
+        person_name: str,
+    ) -> StoredGeneratedAssignment:
+        """
+        Replace the person on an existing saved assignment.
+
+        The assignment's date, role/cover, points and requirement identity are
+        intentionally left unchanged. This makes post-generation editing a
+        controlled personnel swap rather than an arbitrary rewrite.
+        """
+        payload = {
+            "personnel_id": personnel_id,
+            "person_name": person_name,
+        }
+
+        response = (
+            self.supabase
+            .table(ASSIGNMENTS_TABLE)
+            .update(payload)
+            .eq("id", assignment_id)
+            .execute()
+        )
+
+        rows = response.data or []
+
+        if not rows:
+            raise ValueError(
+                "Generated assignment was not found."
+            )
+
+        return self._row_to_assignment(
+            rows[0]
+        )
+
+    def set_generation_status(
+        self,
+        *,
+        generation_id: str,
+        status: str,
+    ) -> StoredGeneration:
+        if status not in {
+            "draft",
+            "published",
+            "superseded",
+        }:
+            raise ValueError(
+                "Unsupported generation status."
+            )
+
+        response = (
+            self.supabase
+            .table(GENERATIONS_TABLE)
+            .update(
+                {
+                    "status": status,
+                }
+            )
+            .eq("id", generation_id)
+            .execute()
+        )
+
+        rows = response.data or []
+
+        if not rows:
+            raise ValueError(
+                "Generated roster was not found."
+            )
+
+        return self._row_to_generation(
+            rows[0]
+        )
+
     def next_version(
         self,
         roster_month_id: str,
