@@ -61,17 +61,65 @@ def _manual_duty_key(assignment: ManualAssignment) -> tuple[date, str] | None:
 
 def _split_locked_manual_assignments(
     manual_assignments: list[ManualAssignment],
-) -> tuple[list[ManualAssignment], list[ManualAssignment]]:
+) -> tuple[
+    list[ManualAssignment],
+    list[ManualAssignment],
+    list[ManualAssignment],
+]:
     duties: list[ManualAssignment] = []
+    reserves: list[ManualAssignment] = []
     covers: list[ManualAssignment] = []
+
     for assignment in manual_assignments:
         if not assignment.is_locked:
             continue
+
         if assignment.assignment_kind == "DUTY":
             duties.append(assignment)
-        elif assignment.assignment_kind in {"COVER", "COVER_RESERVE"}:
+
+        elif assignment.assignment_kind == "RESERVE":
+            reserves.append(assignment)
+
+        elif assignment.assignment_kind in {
+            "COVER",
+            "COVER_RESERVE",
+        }:
             covers.append(assignment)
-    return duties, covers
+
+    return duties, reserves, covers
+
+def _apply_locked_reserves(
+    manual_reserves: list[ManualAssignment],
+) -> list[Assignment]:
+    """
+    Convert manual reserves into zero-point same-day commitments.
+    They do not consume a generated DutyRequirement.
+    """
+    assignments: list[Assignment] = []
+
+    for manual in manual_reserves:
+        centre = _normalise(
+            manual.centre or ""
+        )
+
+        if centre not in {"PT", "RH"}:
+            raise ValueError(
+                "Manual reserve must have PT or RH centre: "
+                f"{manual.personnel_name} / {manual.assignment_date}."
+            )
+
+        assignments.append(
+            Assignment(
+                duty_date=manual.assignment_date,
+                role=f"{centre} RESERVE",
+                centre=centre,
+                person_name=manual.personnel_name,
+                points=0.0,
+                is_overnight=False,
+            )
+        )
+
+    return assignments
 
 
 def _apply_locked_duties(
@@ -213,13 +261,19 @@ def generate_roster_from_planning(
         rules=rules,
     )
 
-    manual_duties, manual_covers = _split_locked_manual_assignments(
-        planning.manual_assignments
+    manual_duties, manual_reserves, manual_covers = (
+        _split_locked_manual_assignments(
+            planning.manual_assignments
+        )
     )
 
     locked_duties, remaining_requirements = _apply_locked_duties(
         requirements=requirements,
         manual_duties=manual_duties,
+    )
+
+    locked_reserves = _apply_locked_reserves(
+        manual_reserves
     )
 
     locked_covers, remaining_cover_slots = _apply_locked_covers(
@@ -231,7 +285,10 @@ def generate_roster_from_planning(
         personnel=planning.personnel,
         cover_slots=remaining_cover_slots,
         availability_entries=planning.availability_entries,
-        locked_duties=locked_duties,
+        locked_duties=[
+            *locked_duties,
+            *locked_reserves,
+        ],
         locked_cover_assignments=locked_covers,
         historical_schedule=historical_schedule,
         rules=rules,
@@ -251,7 +308,10 @@ def generate_roster_from_planning(
         overnight_min_break_days=rules.overnight_min_break_days,
         leaving_reduction_days=rules.leaving_reduction_days,
         manual_only_personnel=rules.manual_only_personnel,
-        initial_assignments=locked_duties,
+        initial_assignments=[
+            *locked_duties,
+            *locked_reserves,
+        ],
         blocked_people_by_date=blocked_people_by_date,
         point_offsets_by_person=cover_points_by_person,
         duty_interests=planning.duty_interests,
@@ -287,7 +347,10 @@ def generate_roster_from_planning(
 
     return PlanningGenerationResult(
         roster_result=roster_result,
-        locked_duty_assignments=locked_duties,
+        locked_duty_assignments=[
+            *locked_duties,
+            *locked_reserves,
+        ],
         cover_assignments=all_cover_assignments,
         unfilled_cover_slots=cover_result.unfilled_slots,
         planning_warnings=cover_result.warnings,

@@ -111,11 +111,19 @@ def validate_schedule(
             )
             continue
 
-        if not is_eligible_for_role(
-            person=person,
-            role=assignment.role,
-            duty_date=assignment.duty_date,
-            availability_entries=availability_entries,
+        is_manual_reserve = (
+            normalise_text(assignment.role)
+            in {"PT RESERVE", "RH RESERVE"}
+        )
+
+        if (
+            not is_manual_reserve
+            and not is_eligible_for_role(
+                person=person,
+                role=assignment.role,
+                duty_date=assignment.duty_date,
+                availability_entries=availability_entries,
+            )
         ):
             report.errors.append(
                 ValidationIssue(

@@ -115,6 +115,22 @@ except Exception as exc:
     st.stop()
 
 
+MANUAL_ONLY_RESERVE_RULE_KEYS = {
+    "daily_pt_reserve_count",
+    "daily_rh_reserve_count",
+}
+
+rules = [
+    rule
+    for rule in rules
+    if rule.key not in MANUAL_ONLY_RESERVE_RULE_KEYS
+]
+
+st.info(
+    "Daily PT/RH Reserve staffing is manual-only and is plotted from "
+    "Manual Planning. The generator does not create standard reserve slots."
+)
+
 if not rules:
     st.info(
         "No machine-readable roster rules exist yet."
