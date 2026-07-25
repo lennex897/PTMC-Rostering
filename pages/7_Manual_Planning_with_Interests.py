@@ -86,16 +86,36 @@ def clear_interest_cache() -> None:
     load_duty_interests.clear()
 
 
-def eligible_overnight_roles(person_record) -> list[str]:
-    roles = []
-    for raw_role in person_record.person.eligible_roles:
-        role = str(raw_role).strip().upper()
-        if not role or role.endswith(" CS/B"):
-            continue
-        if role not in roles:
-            roles.append(role)
+PTMC_OVERNIGHT_ROLES = {
+    "PT DM",
+    "PT CS1",
+    "PT CS2",
+    "PT CS/B",
+    "PT SB1",
+    "PT AE",
+    "RH SB1",
+    "RH SB2",
+}
 
-    preferred_order = {"DM": 0, "CS1": 1, "CS2": 2, "SB1": 3, "SB2": 4, "AE": 5}
+
+def eligible_overnight_roles(person_record) -> list[str]:
+    roles = {
+        str(raw_role).strip().upper()
+        for raw_role in person_record.person.eligible_roles
+        if str(raw_role).strip()
+    }
+
+    roles &= PTMC_OVERNIGHT_ROLES
+
+    preferred_order = {
+        "DM": 0,
+        "CS1": 1,
+        "CS2": 2,
+        "CS/B": 3,
+        "SB1": 4,
+        "SB2": 5,
+        "AE": 6,
+    }
 
     def sort_key(role: str) -> tuple[int, str]:
         short_role = role.split(" ", 1)[1] if " " in role else role
@@ -403,9 +423,10 @@ with interest_tab:
             ],
             key=f"duty_interest_role_{interest_person}",
             help=(
-                "Only roles assigned to this person in Personnel "
-                "Management are shown. PT CS/B is excluded because "
-                "this interest is for PTMC overnight duty only."
+                "Only this person's configured PTMC overnight roles are shown. "
+                "PT CS/B is included because it is an overnight role on "
+                "Monday, Thursday, and Sunday. PT SB2 and RH daytime roles "
+                "are excluded."
             ),
         )
 
@@ -416,9 +437,8 @@ with interest_tab:
         )
     else:
         st.warning(
-            f"{interest_person} currently has no eligible overnight "
-            "roles configured. An interest can be recorded, but the "
-            "generator will have no overnight role to assign."
+            f"{interest_person} currently has no PTMC overnight roles "
+            "configured, so an overnight interest cannot be recorded."
         )
 
     interest_remarks = st.text_input(
@@ -445,6 +465,7 @@ with interest_tab:
         type="primary",
         use_container_width=True,
         key="add_duty_interest_button",
+        disabled=not actual_eligible_roles,
     )
 
     if submit_interest:

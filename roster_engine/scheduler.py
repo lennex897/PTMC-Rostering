@@ -2,6 +2,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 
+from roster_engine.duty_interest_repository import DutyInterest
 from roster_engine.eligibility import (
     eligible_people_for_role,
 )
@@ -17,6 +18,7 @@ from roster_engine.scoring import (
     CandidateScore,
     DEFAULT_ROLE_PRIORITIES,
     ScoringContext,
+    normalise_text,
     rank_candidates,
 )
 
@@ -24,9 +26,9 @@ from roster_engine.scoring import (
 @dataclass
 class SchedulerResult:
     schedule: Schedule
-    unfilled_requirements: list[DutyRequirement] = field(
-        default_factory=list
-    )
+    unfilled_requirements: list[
+        DutyRequirement
+    ] = field(default_factory=list)
     assignment_scores: dict[
         tuple[date, str],
         CandidateScore,
@@ -40,12 +42,6 @@ class SchedulerResult:
 def requirement_sort_key(
     requirement: DutyRequirement,
 ) -> tuple[date, int, str]:
-    """
-    Schedule harder or more specialised roles first.
-
-    Lower number means earlier scheduling.
-    """
-
     role_priority = {
         "PT DM": 0,
         "RH DM": 0,
@@ -76,8 +72,11 @@ def people_already_assigned_on_date(
     duty_date: date,
 ) -> set[str]:
     return {
-        assignment.person_name.strip().upper()
-        for assignment in schedule.assignments_for_date(
+        normalise_text(
+            assignment.person_name
+        )
+        for assignment
+        in schedule.assignments_for_date(
             duty_date
         )
     }
@@ -91,21 +90,27 @@ def selected_departments_for_date(
 ) -> frozenset[str]:
     departments: set[str] = set()
 
-    for assignment in schedule.assignments_for_date(
-        duty_date
+    for assignment in (
+        schedule.assignments_for_date(
+            duty_date
+        )
     ):
         if assignment.centre != centre:
             continue
 
         person = personnel_by_name.get(
-            assignment.person_name.strip().upper()
+            normalise_text(
+                assignment.person_name
+            )
         )
 
         if person is None:
             continue
 
         if person.department:
-            departments.add(person.department)
+            departments.add(
+                person.department
+            )
 
     return frozenset(departments)
 
@@ -114,21 +119,67 @@ def generate_schedule(
     *,
     personnel: list[Person],
     requirements: list[DutyRequirement],
-    availability_entries: list[AvailabilityEntry],
+    availability_entries: list[
+        AvailabilityEntry
+    ],
     historical_schedule: Schedule | None = None,
-    role_priorities: tuple[RolePriority, ...] | None = None,
+    role_priorities: tuple[
+        RolePriority,
+        ...
+    ] | None = None,
     maximum_weekly_overnights: int = 3,
+    initial_assignments: list[
+        Assignment
+    ] | None = None,
+    blocked_people_by_date: dict[
+        date,
+        set[str],
+    ] | None = None,
+    point_offsets_by_person: dict[
+        str,
+        float,
+    ] | None = None,
+    duty_interests: tuple[
+        DutyInterest,
+        ...
+    ] | list[DutyInterest] | None = None,
 ) -> SchedulerResult:
     """
-    Generate a basic roster using eligibility and candidate scoring.
+    Generate remaining duty requirements.
 
-    The function processes each duty requirement, obtains eligible
-    personnel, ranks them, and selects the highest-ranked available
-    candidate.
+    duty_interests are soft preferences only. They influence candidate
+    scores after hard eligibility filtering and only for overnight duties.
     """
     if role_priorities is None:
-        role_priorities = DEFAULT_ROLE_PRIORITIES
-        
+        role_priorities = (
+            DEFAULT_ROLE_PRIORITIES
+        )
+
+    blocked_people_by_date = {
+        duty_date: {
+            normalise_text(name)
+            for name in names
+        }
+        for duty_date, names
+        in (
+            blocked_people_by_date
+            or {}
+        ).items()
+    }
+
+    point_offsets_by_person = {
+        normalise_text(name): float(points)
+        for name, points
+        in (
+            point_offsets_by_person
+            or {}
+        ).items()
+    }
+
+    duty_interests = tuple(
+        duty_interests or ()
+    )
+
     schedule = Schedule()
 
     if historical_schedule is not None:
@@ -136,12 +187,19 @@ def generate_schedule(
             historical_schedule.assignments
         )
 
+    if initial_assignments:
+        schedule.assignments.extend(
+            initial_assignments
+        )
+
     result = SchedulerResult(
         schedule=schedule,
     )
 
     personnel_by_name = {
-        person.name.strip().upper(): person
+        normalise_text(
+            person.name
+        ): person
         for person in personnel
     }
 
@@ -156,32 +214,57 @@ def generate_schedule(
     ] = defaultdict(list)
 
     for requirement in sorted_requirements:
-        eligible_people = eligible_people_for_role(
-            personnel=personnel,
-            role=requirement.role,
-            duty_date=requirement.duty_date,
-            availability_entries=availability_entries,
+        eligible_people = (
+            eligible_people_for_role(
+                personnel=personnel,
+                role=requirement.role,
+                duty_date=requirement.duty_date,
+                availability_entries=(
+                    availability_entries
+                ),
+            )
         )
 
         assigned_names = (
             people_already_assigned_on_date(
                 schedule=schedule,
-                duty_date=requirement.duty_date,
+                duty_date=(
+                    requirement.duty_date
+                ),
+            )
+        )
+
+        externally_blocked = (
+            blocked_people_by_date.get(
+                requirement.duty_date,
+                set(),
             )
         )
 
         eligible_people = [
             person
             for person in eligible_people
-            if person.name.strip().upper()
-            not in assigned_names
+            if (
+                normalise_text(
+                    person.name
+                )
+                not in assigned_names
+                and normalise_text(
+                    person.name
+                )
+                not in externally_blocked
+            )
         ]
 
         selected_departments = (
             selected_departments_for_date(
                 schedule=schedule,
-                duty_date=requirement.duty_date,
-                personnel_by_name=personnel_by_name,
+                duty_date=(
+                    requirement.duty_date
+                ),
+                personnel_by_name=(
+                    personnel_by_name
+                ),
                 centre=requirement.centre,
             )
         )
@@ -190,22 +273,37 @@ def generate_schedule(
             duty_date=requirement.duty_date,
             role=requirement.role,
             schedule=schedule,
-            selected_departments=selected_departments,
+            selected_departments=(
+                selected_departments
+            ),
             maximum_weekly_overnights=(
                 maximum_weekly_overnights
             ),
-            is_overnight=requirement.is_overnight,
-            role_priorities=role_priorities,
+            is_overnight=(
+                requirement.is_overnight
+            ),
+            role_priorities=(
+                role_priorities
+            ),
+            point_offsets_by_person=(
+                point_offsets_by_person
+            ),
+            duty_interests=(
+                duty_interests
+            ),
         )
 
-        ranked_candidates = rank_candidates(
-            personnel=eligible_people,
-            context=context,
+        ranked_candidates = (
+            rank_candidates(
+                personnel=eligible_people,
+                context=context,
+            )
         )
 
         selectable_candidates = [
             candidate
-            for candidate in ranked_candidates
+            for candidate
+            in ranked_candidates
             if candidate.is_selectable
         ]
 
@@ -213,28 +311,36 @@ def generate_schedule(
             result.unfilled_requirements.append(
                 requirement
             )
-
             schedule.warnings.append(
                 "No eligible selectable person for "
                 f"{requirement.role} on "
                 f"{requirement.duty_date.isoformat()}."
             )
-
             continue
 
-        selected_score = selectable_candidates[0]
-        selected_person = selected_score.person
+        selected_score = (
+            selectable_candidates[0]
+        )
+        selected_person = (
+            selected_score.person
+        )
 
         assignment = Assignment(
             duty_date=requirement.duty_date,
             role=requirement.role,
             centre=requirement.centre,
-            person_name=selected_person.name,
+            person_name=(
+                selected_person.name
+            ),
             points=requirement.points,
-            is_overnight=requirement.is_overnight,
+            is_overnight=(
+                requirement.is_overnight
+            ),
         )
 
-        schedule.add_assignment(assignment)
+        schedule.add_assignment(
+            assignment
+        )
 
         assignments_created_by_date[
             requirement.duty_date

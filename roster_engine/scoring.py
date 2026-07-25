@@ -1,11 +1,15 @@
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+from roster_engine.duty_interest_repository import DutyInterest
 from roster_engine.models import (
     Person,
     RolePriority,
     Schedule,
 )
+
+
+DEFAULT_DUTY_INTEREST_BONUS = 15.0
 
 
 DEFAULT_ROLE_PRIORITIES: tuple[RolePriority, ...] = (
@@ -52,11 +56,9 @@ class ScoreComponent:
 class CandidateScore:
     person: Person
     total: float = 0.0
-
     components: list[ScoreComponent] = field(
         default_factory=list
     )
-
     blocked_reasons: list[str] = field(
         default_factory=list
     )
@@ -76,7 +78,6 @@ class CandidateScore:
                 value=value,
             )
         )
-
         self.total += value
 
     def block(
@@ -95,10 +96,14 @@ class ScoringContext:
     selected_departments: frozenset[str] = frozenset()
     maximum_weekly_overnights: int = 3
     is_overnight: bool | None = None
-
     role_priorities: tuple[RolePriority, ...] = (
         DEFAULT_ROLE_PRIORITIES
     )
+    point_offsets_by_person: dict[str, float] = field(
+        default_factory=dict
+    )
+    duty_interests: tuple[DutyInterest, ...] = ()
+    duty_interest_bonus: float = DEFAULT_DUTY_INTEREST_BONUS
 
 
 def normalise_text(
@@ -112,13 +117,6 @@ def normalise_text(
 def is_overnight_role(
     role: str,
 ) -> bool:
-    """
-    All current PT roles are treated as overnight duties.
-
-    This can later be replaced with DutyRequirement.is_overnight
-    when the scheduler passes the full requirement object.
-    """
-
     return normalise_text(role).startswith("PT ")
 
 
@@ -130,17 +128,19 @@ def assignments_in_week(
     week_start = duty_date - timedelta(
         days=duty_date.weekday()
     )
-
     week_end = week_start + timedelta(days=6)
 
     return [
         assignment
-        for assignment in schedule.assignments_for_person(
+        for assignment
+        in schedule.assignments_for_person(
             person.name
         )
-        if week_start
-        <= assignment.duty_date
-        <= week_end
+        if (
+            week_start
+            <= assignment.duty_date
+            <= week_end
+        )
     ]
 
 
@@ -150,7 +150,8 @@ def overnight_assignments(
 ):
     return [
         assignment
-        for assignment in schedule.assignments_for_person(
+        for assignment
+        in schedule.assignments_for_person(
             person.name
         )
         if assignment.is_overnight
@@ -164,7 +165,8 @@ def last_overnight_before(
 ):
     previous_assignments = [
         assignment
-        for assignment in overnight_assignments(
+        for assignment
+        in overnight_assignments(
             person,
             schedule,
         )
@@ -176,7 +178,9 @@ def last_overnight_before(
 
     return max(
         previous_assignments,
-        key=lambda assignment: assignment.duty_date,
+        key=lambda assignment: (
+            assignment.duty_date
+        ),
     )
 
 
@@ -187,7 +191,6 @@ def apply_role_priorities(
     person_name = normalise_text(
         result.person.name
     )
-
     role = normalise_text(
         context.role
     )
@@ -198,18 +201,16 @@ def apply_role_priorities(
         ):
             continue
 
-        priority_person = normalise_text(
-            priority.person_name
-        )
-
-        priority_role = normalise_text(
-            priority.role
-        )
-
-        if priority_person != person_name:
+        if (
+            normalise_text(priority.person_name)
+            != person_name
+        ):
             continue
 
-        if priority_role != role:
+        if (
+            normalise_text(priority.role)
+            != role
+        ):
             continue
 
         result.add(
@@ -219,6 +220,58 @@ def apply_role_priorities(
             ),
             value=priority.adjustment,
         )
+
+
+def apply_duty_interest(
+    result: CandidateScore,
+    context: ScoringContext,
+    *,
+    is_overnight: bool,
+) -> None:
+    """
+    Apply PTMC overnight interest as a soft preference only.
+
+    Interest never makes a candidate eligible and never bypasses hard
+    constraints. Eligibility filtering occurs before scoring in scheduler.py.
+
+    An interest with preferred_role=None means "any eligible overnight role".
+    """
+    if not is_overnight:
+        return
+
+    person_name = normalise_text(
+        result.person.name
+    )
+    role = normalise_text(
+        context.role
+    )
+
+    matching_interests = [
+        interest
+        for interest in context.duty_interests
+        if (
+            normalise_text(
+                interest.person_name
+            )
+            == person_name
+            and interest.interest_date
+            == context.duty_date
+            and interest.applies_to_role(
+                role
+            )
+        )
+    ]
+
+    if not matching_interests:
+        return
+
+    # Multiple duplicate interests should not stack bonuses.
+    result.add(
+        description=(
+            "PTMC overnight duty interest"
+        ),
+        value=context.duty_interest_bonus,
+    )
 
 
 def score_candidate(
@@ -232,21 +285,32 @@ def score_candidate(
     role = normalise_text(
         context.role
     )
-
     department = normalise_text(
         person.department
     )
+    person_key = normalise_text(
+        person.name
+    )
 
-    current_points = (
+    scheduled_points = (
         context.schedule.total_points_for_person(
             person.name
         )
     )
+    external_points = float(
+        context.point_offsets_by_person.get(
+            person_key,
+            0.0,
+        )
+    )
+    current_points = (
+        scheduled_points
+        + external_points
+    )
 
-    # A person with fewer points receives a better score.
     result.add(
         description=(
-            f"Current duty points: "
+            f"Current total workload points: "
             f"{current_points:g}"
         ),
         value=-10.0 * current_points,
@@ -254,13 +318,15 @@ def score_candidate(
 
     selected_departments = {
         normalise_text(value)
-        for value in context.selected_departments
+        for value
+        in context.selected_departments
     }
 
     if (
         department
         and department != "UNSPECIFIED"
-        and department in selected_departments
+        and department
+        in selected_departments
     ):
         result.add(
             description=(
@@ -280,7 +346,8 @@ def score_candidate(
 
     overnight_duty = (
         context.is_overnight
-        if context.is_overnight is not None
+        if context.is_overnight
+        is not None
         else is_overnight_role(role)
     )
 
@@ -301,7 +368,6 @@ def score_candidate(
                 ),
                 value=10.0,
             )
-
         else:
             days_since_previous = (
                 context.duty_date
@@ -313,13 +379,11 @@ def score_candidate(
                     "No day break since previous "
                     "overnight duty"
                 )
-
             else:
                 spacing_bonus = min(
                     float(days_since_previous),
                     10.0,
                 )
-
                 result.add(
                     description=(
                         f"{days_since_previous} days "
@@ -330,7 +394,8 @@ def score_candidate(
 
         weekly_overnights = sum(
             1
-            for assignment in assignments_in_week(
+            for assignment
+            in assignments_in_week(
                 person=person,
                 duty_date=context.duty_date,
                 schedule=context.schedule,
@@ -346,7 +411,6 @@ def score_candidate(
                 "Maximum weekly overnight duties "
                 "already reached"
             )
-
         else:
             result.add(
                 description=(
@@ -374,6 +438,12 @@ def score_candidate(
                 ),
                 value=-departure_penalty,
             )
+
+    apply_duty_interest(
+        result=result,
+        context=context,
+        is_overnight=overnight_duty,
+    )
 
     apply_role_priorities(
         result=result,
