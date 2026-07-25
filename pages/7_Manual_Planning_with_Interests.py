@@ -5,7 +5,12 @@ from datetime import date
 
 import streamlit as st
 
+from roster_engine.availability_repository import AvailabilityRepository
+from roster_engine.cover_repository import CoverRepository
 from roster_engine.database import get_supabase
+from roster_engine.duty_interest_repository import DutyInterestRepository
+from roster_engine.manual_planning_repository import ManualPlanningRepository
+from roster_engine.personnel_repository import load_personnel_records
 
 
 st.set_page_config(page_title="Manual Planning", page_icon="📌", layout="wide")
@@ -47,91 +52,30 @@ def load_roster_months() -> list[dict]:
 
 
 @st.cache_data(ttl=20)
-def load_personnel() -> list[dict]:
-    response = (
-        get_supabase()
-        .table("roster_personnel")
-        .select("id,name,centre,is_active,is_cover_fit,roster_personnel_roles(role)")
-        .eq("is_active", True)
-        .order("name")
-        .execute()
-    )
-    return list(response.data or [])
+def load_personnel():
+    return load_personnel_records(include_inactive=False)
 
 
 @st.cache_data(ttl=15)
-def load_cover_requirements(roster_month_id: str) -> list[dict]:
-    response = (
-        get_supabase()
-        .table("roster_cover_requirements")
-        .select(
-            "id,requesting_unit,cover_category,cover_type,session,"
-            "start_date,end_date,personnel_required,mandatory,remarks"
-        )
-        .eq("roster_month_id", roster_month_id)
-        .order("start_date")
-        .execute()
-    )
-    return list(response.data or [])
+def load_cover_requirements(roster_month_id: str):
+    return CoverRepository(get_supabase()).list_month_requirements(roster_month_id)
 
 
 @st.cache_data(ttl=15)
-def load_manual_assignments(roster_month_id: str) -> list[dict]:
-    response = (
-        get_supabase()
-        .table("roster_manual_assignments")
-        .select(
-            "id,personnel_name,assignment_date,assignment_kind,centre,"
-            "role_name,cover_requirement_id,cover_label,session,"
-            "is_locked,allow_override,remarks"
-        )
-        .eq("roster_month_id", roster_month_id)
-        .order("assignment_date")
-        .order("personnel_name")
-        .execute()
-    )
-    return list(response.data or [])
+def load_manual_assignments(roster_month_id: str):
+    return ManualPlanningRepository(get_supabase()).list_month_assignments(roster_month_id)
 
 
 @st.cache_data(ttl=15)
-def load_duty_interests(roster_month_id: str) -> list[dict]:
-    response = (
-        get_supabase()
-        .table("roster_duty_interests")
-        .select(
-            "id,personnel_id,interest_date,preferred_role,remarks,"
-            "personnel:roster_personnel(name,centre)"
-        )
-        .eq("roster_month_id", roster_month_id)
-        .order("interest_date")
-        .execute()
-    )
-    return list(response.data or [])
+def load_duty_interests(roster_month_id: str):
+    return DutyInterestRepository(get_supabase()).list_month_interests(roster_month_id)
 
 
 @st.cache_data(ttl=15)
-def load_availability(roster_month_id: str) -> list[dict]:
-    response = (
-        get_supabase()
-        .table("roster_availability")
-        .select(
-            "availability_date,code,"
-            "personnel:roster_personnel(name)"
-        )
-        .eq("roster_month_id", roster_month_id)
-        .execute()
+def load_availability(*, year: int, month: int):
+    return AvailabilityRepository(get_supabase()).load_month_availability(
+        year=year, month=month
     )
-
-    rows = []
-    for item in response.data or []:
-        personnel = item.get("personnel") or {}
-        if personnel.get("name"):
-            rows.append({
-                "person_name": str(personnel["name"]),
-                "availability_date": item.get("availability_date"),
-                "code": item.get("code"),
-            })
-    return rows
 
 
 def clear_manual_cache() -> None:
@@ -142,41 +86,16 @@ def clear_interest_cache() -> None:
     load_duty_interests.clear()
 
 
-def requirement_contains_date(requirement: dict, current_date: date) -> bool:
-    start = date.fromisoformat(str(requirement["start_date"]))
-    end = date.fromisoformat(str(requirement["end_date"]))
-    return start <= current_date <= end
-
-
-def eligible_overnight_roles(person: dict) -> list[str]:
-    """
-    Return the selected person's actual eligible overnight roles.
-
-    roster_personnel_roles is the source of truth. Day-only CS/B is excluded
-    from PTMC overnight interest.
-    """
-    role_rows = person.get("roster_personnel_roles") or []
+def eligible_overnight_roles(person_record) -> list[str]:
     roles = []
-
-    for row in role_rows:
-        role = str(row.get("role") or "").strip().upper()
-        if not role:
+    for raw_role in person_record.person.eligible_roles:
+        role = str(raw_role).strip().upper()
+        if not role or role.endswith(" CS/B"):
             continue
-
-        if role.endswith(" CS/B"):
-            continue
-
         if role not in roles:
             roles.append(role)
 
-    preferred_order = {
-        "DM": 0,
-        "CS1": 1,
-        "CS2": 2,
-        "SB1": 3,
-        "SB2": 4,
-        "AE": 5,
-    }
+    preferred_order = {"DM": 0, "CS1": 1, "CS2": 2, "SB1": 3, "SB2": 4, "AE": 5}
 
     def sort_key(role: str) -> tuple[int, str]:
         short_role = role.split(" ", 1)[1] if " " in role else role
@@ -185,17 +104,10 @@ def eligible_overnight_roles(person: dict) -> list[str]:
     return sorted(roles, key=sort_key)
 
 
-def get_availability_code(
-    availability_rows: list[dict],
-    person_name: str,
-    current_date: date,
-) -> str | None:
-    for row in availability_rows:
-        if (
-            str(row.get("person_name")) == person_name
-            and str(row.get("availability_date")) == current_date.isoformat()
-        ):
-            return str(row.get("code") or "").upper() or None
+def get_availability_code(availability_rows, person_name: str, current_date: date) -> str | None:
+    for entry in availability_rows:
+        if entry.person_name == person_name and entry.unavailable_date == current_date:
+            return entry.reason.strip().upper() or None
     return None
 
 
@@ -229,21 +141,24 @@ st.session_state["selected_roster_month"] = selected_month.isoformat()
 cover_requirements = load_cover_requirements(roster_month_id)
 manual_assignments = load_manual_assignments(roster_month_id)
 duty_interests = load_duty_interests(roster_month_id)
-availability_rows = load_availability(roster_month_id)
+availability_rows = load_availability(
+    year=selected_month.year,
+    month=selected_month.month,
+)
 
-active_people = [row for row in personnel if bool(row.get("is_active", True))]
-person_by_name = {str(row["name"]): row for row in active_people}
+active_people = [record for record in personnel if record.person.is_active]
+person_by_name = {record.person.name: record for record in active_people}
 all_person_names = sorted(person_by_name)
 cover_fit_names = sorted(
-    str(row["name"]) for row in active_people if bool(row.get("is_cover_fit"))
+    record.person.name for record in active_people if record.person.is_cover_fit is True
 )
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Locked assignments", len(manual_assignments))
-m2.metric("Locked duties", sum(1 for r in manual_assignments if r["assignment_kind"] == "DUTY"))
+m2.metric("Locked duties", sum(1 for r in manual_assignments if r.assignment_kind == "DUTY"))
 m3.metric(
     "Locked covers",
-    sum(1 for r in manual_assignments if r["assignment_kind"] in ("COVER", "COVER_RESERVE")),
+    sum(1 for r in manual_assignments if r.assignment_kind in ("COVER", "COVER_RESERVE")),
 )
 m4.metric("PTMC Overnight Interests", len(duty_interests))
 
@@ -310,8 +225,8 @@ with duty_tab:
         row
         for row in manual_assignments
         if (
-            row["personnel_name"] == duty_person
-            and str(row["assignment_date"]) == duty_date.isoformat()
+            row.personnel_name == duty_person
+            and row.assignment_date == duty_date
         )
     ]
 
@@ -380,21 +295,21 @@ with cover_tab:
 
         available_requirements = [
             req for req in cover_requirements
-            if requirement_contains_date(req, cover_date)
+            if req.includes_date(cover_date)
         ]
 
         if not available_requirements:
             st.info("No cover requirements exist on this date.")
         else:
-            requirement_by_id = {str(req["id"]): req for req in available_requirements}
+            requirement_by_id = {req.id: req for req in available_requirements}
 
             selected_requirement_id = st.selectbox(
                 "Cover requirement",
                 options=list(requirement_by_id),
                 format_func=lambda req_id: (
-                    f"{requirement_by_id[req_id]['requesting_unit']} — "
-                    f"{requirement_by_id[req_id]['cover_type']} "
-                    f"({SESSION_LABELS.get(str(requirement_by_id[req_id]['session']), requirement_by_id[req_id]['session'])})"
+                    f"{requirement_by_id[req_id].requesting_unit} — "
+                    f"{requirement_by_id[req_id].cover_type} "
+                    f"({SESSION_LABELS.get(requirement_by_id[req_id].session, requirement_by_id[req_id].session)})"
                 ),
             )
             selected_requirement = requirement_by_id[selected_requirement_id]
@@ -425,8 +340,8 @@ with cover_tab:
             if st.button("Lock cover assignment", type="primary", use_container_width=True):
                 kind = "COVER" if assignment_mode == "Active cover" else "COVER_RESERVE"
                 label = (
-                    f"{selected_requirement['requesting_unit']} — "
-                    f"{selected_requirement['cover_type']}"
+                    f"{selected_requirement.requesting_unit} — "
+                    f"{selected_requirement.cover_type}"
                     if kind == "COVER" else "FC RESERVE"
                 )
                 payload = {
@@ -438,7 +353,7 @@ with cover_tab:
                     "role_name": None,
                     "cover_requirement_id": selected_requirement_id,
                     "cover_label": label,
-                    "session": selected_requirement["session"],
+                    "session": selected_requirement.session,
                     "is_locked": True,
                     "allow_override": allow_cover_override,
                     "remarks": cover_remarks.strip() or None,
@@ -542,7 +457,7 @@ with interest_tab:
         payload = {
             "roster_month_id": roster_month_id,
             "personnel_id": str(
-                person_by_name[interest_person]["id"]
+                person_by_name[interest_person].id
             ),
             "interest_date": interest_date.isoformat(),
             "preferred_role": preferred_role,
@@ -576,20 +491,13 @@ with interest_tab:
         rows = []
 
         for item in duty_interests:
-            p = item.get("personnel") or {}
-
             rows.append({
-                "ID": item["id"],
-                "Date": date.fromisoformat(
-                    str(item["interest_date"])
-                ),
-                "Personnel": p.get("name") or "Unknown",
-                "Centre": p.get("centre") or "",
-                "Preference": (
-                    item.get("preferred_role")
-                    or "Any eligible overnight role"
-                ),
-                "Remarks": item.get("remarks") or "",
+                "ID": item.id,
+                "Date": item.interest_date,
+                "Personnel": item.person_name or "Unknown",
+                "Centre": item.centre,
+                "Preference": item.preferred_role or "Any eligible overnight role",
+                "Remarks": item.remarks or "",
             })
 
         st.dataframe(
@@ -605,18 +513,15 @@ with interest_tab:
             },
         )
 
-        interest_lookup = {
-            str(item["id"]): item
-            for item in duty_interests
-        }
+        interest_lookup = {item.id: item for item in duty_interests}
 
         delete_interest_id = st.selectbox(
             "Select overnight interest to delete",
             options=list(interest_lookup),
             format_func=lambda item_id: (
-                f"{interest_lookup[item_id]['interest_date']} — "
-                f"{(interest_lookup[item_id].get('personnel') or {}).get('name', 'Unknown')} — "
-                f"{interest_lookup[item_id].get('preferred_role') or 'Any eligible overnight role'}"
+                f"{interest_lookup[item_id].interest_date:%d %b} — "
+                f"{interest_lookup[item_id].person_name or 'Unknown'} — "
+                f"{interest_lookup[item_id].preferred_role or 'Any eligible overnight role'}"
             ),
             key="delete_interest_selector",
         )
@@ -686,13 +591,12 @@ with review_tab:
     else:
         rows = []
         for item in duty_interests:
-            p = item.get("personnel") or {}
             rows.append({
-                "Date": date.fromisoformat(str(item["interest_date"])),
-                "Personnel": p.get("name") or "Unknown",
-                "Centre": p.get("centre") or "",
-                "Preference": item.get("preferred_role") or "Any eligible overnight role",
-                "Remarks": item.get("remarks") or "",
+                "Date": item.interest_date,
+                "Personnel": item.person_name or "Unknown",
+                "Centre": item.centre,
+                "Preference": item.preferred_role or "Any eligible overnight role",
+                "Remarks": item.remarks or "",
             })
         st.dataframe(
             rows,
