@@ -7,7 +7,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 
-from roster_engine.models import Assignment, Schedule
+from roster_engine.models import Assignment, Person, Schedule
 from roster_engine.personnel import normalise_text
 from roster_engine.roster_grid import (
     DATE_ROW,
@@ -60,6 +60,15 @@ NON_PERSONNEL_LABELS = {
     "NUMBER OF CS",
     "NUMBER OF AE",
     "TOTAL DUTY TEAM STRENGTH",
+}
+
+
+# Fixed personnel blocks in the current Scheduling Roster workbook template.
+# These are intentionally bounded so synchronisation never inserts/deletes rows
+# and therefore cannot shift the summary/formula sections below them.
+PERSONNEL_BLOCKS = {
+    "PT": range(5, 42),   # rows 5-41 inclusive
+    "RH": range(52, 72),  # rows 52-71 inclusive
 }
 
 def canonical_person_name(value: object) -> str:
@@ -204,6 +213,304 @@ def find_personnel_rows(
 
     return personnel_rows
 
+
+def personnel_display_name(person: Person) -> str:
+    """
+    Return the value written into the Excel personnel-name column.
+
+    Supabase is the source of truth for the person's full name and rank.
+    """
+    name = normalise_text(person.name)
+    rank = normalise_text(person.rank)
+
+    if not name:
+        return ""
+
+    parts = name.split()
+
+    if parts and parts[0] in KNOWN_RANKS:
+        return name
+
+    if rank:
+        return f"{rank} {name}"
+
+    return name
+
+
+def _person_is_in_target_month(
+    person: Person,
+    *,
+    year: int,
+    month: int,
+) -> bool:
+    """
+    Include personnel who are active for at least part of the target month.
+
+    leaving_date is treated as the first date the person is no longer usable.
+    """
+    if not person.is_active:
+        return False
+
+    month_start = date(year, month, 1)
+
+    if (
+        person.leaving_date is not None
+        and person.leaving_date <= month_start
+    ):
+        return False
+
+    return True
+
+
+def _looks_like_same_person(
+    excel_name: str,
+    supabase_name: str,
+) -> bool:
+    """
+    Conservative fallback matcher for legacy Excel names.
+
+    Exact canonical matches are preferred. This fallback only handles:
+    - one name being a clear prefix of the other; or
+    - a very high character-similarity typo.
+
+    It is used only when the match is unique within the same centre.
+    """
+    from difflib import SequenceMatcher
+
+    excel_name = canonical_person_name(excel_name)
+    supabase_name = canonical_person_name(supabase_name)
+
+    if not excel_name or not supabase_name:
+        return False
+
+    if excel_name == supabase_name:
+        return True
+
+    excel_parts = excel_name.split()
+    supabase_parts = supabase_name.split()
+
+    shorter = excel_parts if len(excel_parts) <= len(supabase_parts) else supabase_parts
+    longer = supabase_parts if len(excel_parts) <= len(supabase_parts) else excel_parts
+
+    if (
+        len(shorter) >= 2
+        and longer[:len(shorter)] == shorter
+    ):
+        return True
+
+    similarity = SequenceMatcher(
+        None,
+        excel_name,
+        supabase_name,
+    ).ratio()
+
+    return similarity >= 0.92
+
+
+def _clear_personnel_schedule_cells(
+    worksheet: Worksheet,
+    *,
+    row_number: int,
+    date_columns: dict[date, int],
+) -> None:
+    """
+    Clear only the date-grid cells when a row is reassigned to another person.
+
+    This prevents leave/duty values belonging to the old person from being
+    inherited by the new Supabase person while preserving row formatting and
+    summary formulas outside the date grid.
+    """
+    for column_number in date_columns.values():
+        worksheet.cell(
+            row=row_number,
+            column=column_number,
+        ).value = None
+
+
+def sync_personnel_rows(
+    worksheet: Worksheet,
+    *,
+    personnel: list[Person],
+    year: int,
+    month: int,
+    date_columns: dict[date, int],
+) -> dict[str, int]:
+    """
+    Synchronise PT/RH personnel names from Supabase into the fixed Excel blocks.
+
+    Existing exact/unique legacy matches retain their rows so any legitimate
+    template availability entries remain attached to the same person.
+
+    Rows belonging to personnel no longer in the target month's Supabase pool
+    are reused for unmatched/new personnel, and their date-grid cells are
+    cleared before reuse.
+
+    No rows are inserted or deleted.
+    """
+    target_people = [
+        person
+        for person in personnel
+        if _person_is_in_target_month(
+            person,
+            year=year,
+            month=month,
+        )
+    ]
+
+    by_centre: dict[str, list[Person]] = {
+        "PT": [],
+        "RH": [],
+    }
+
+    for person in target_people:
+        centre = normalise_text(person.centre)
+
+        if centre not in by_centre:
+            raise ValueError(
+                f"Unsupported personnel centre for export: "
+                f"{person.name} ({person.centre!r})"
+            )
+
+        by_centre[centre].append(person)
+
+    final_rows: dict[str, int] = {}
+
+    for centre, row_range in PERSONNEL_BLOCKS.items():
+        people = by_centre[centre]
+        available_rows = list(row_range)
+
+        if len(people) > len(available_rows):
+            raise ValueError(
+                f"{centre} personnel count ({len(people)}) exceeds "
+                f"the Excel template capacity ({len(available_rows)})."
+            )
+
+        existing_by_row = {
+            row_number: canonical_person_name(
+                worksheet.cell(
+                    row=row_number,
+                    column=PERSONNEL_COLUMN,
+                ).value
+            )
+            for row_number in available_rows
+        }
+
+        unmatched_people = list(people)
+        matched_rows: set[int] = set()
+
+        # Pass 1: exact canonical match.
+        for person in list(unmatched_people):
+            person_key = canonical_person_name(
+                person.name
+            )
+
+            exact_rows = [
+                row_number
+                for row_number, existing_key
+                in existing_by_row.items()
+                if (
+                    row_number not in matched_rows
+                    and existing_key == person_key
+                )
+            ]
+
+            if len(exact_rows) == 1:
+                row_number = exact_rows[0]
+                matched_rows.add(row_number)
+                final_rows[person_key] = row_number
+                worksheet.cell(
+                    row=row_number,
+                    column=PERSONNEL_COLUMN,
+                ).value = personnel_display_name(person)
+                unmatched_people.remove(person)
+
+        # Pass 2: conservative unique legacy-name match.
+        for person in list(unmatched_people):
+            candidate_rows = [
+                row_number
+                for row_number, existing_key
+                in existing_by_row.items()
+                if (
+                    row_number not in matched_rows
+                    and _looks_like_same_person(
+                        existing_key,
+                        person.name,
+                    )
+                )
+            ]
+
+            if len(candidate_rows) == 1:
+                row_number = candidate_rows[0]
+                matched_rows.add(row_number)
+                person_key = canonical_person_name(
+                    person.name
+                )
+                final_rows[person_key] = row_number
+                worksheet.cell(
+                    row=row_number,
+                    column=PERSONNEL_COLUMN,
+                ).value = personnel_display_name(person)
+                unmatched_people.remove(person)
+
+        # Reuse rows that no longer belong to a matched current person.
+        reusable_rows = [
+            row_number
+            for row_number in available_rows
+            if row_number not in matched_rows
+        ]
+
+        for person, row_number in zip(
+            unmatched_people,
+            reusable_rows,
+            strict=False,
+        ):
+            _clear_personnel_schedule_cells(
+                worksheet,
+                row_number=row_number,
+                date_columns=date_columns,
+            )
+
+            worksheet.cell(
+                row=row_number,
+                column=PERSONNEL_COLUMN,
+            ).value = personnel_display_name(person)
+
+            final_rows[
+                canonical_person_name(person.name)
+            ] = row_number
+
+            matched_rows.add(row_number)
+
+        # Clear unused personnel-name slots and their date-grid data.
+        used_keys = {
+            canonical_person_name(person.name)
+            for person in people
+        }
+
+        for row_number in available_rows:
+            current_key = canonical_person_name(
+                worksheet.cell(
+                    row=row_number,
+                    column=PERSONNEL_COLUMN,
+                ).value
+            )
+
+            if (
+                row_number not in matched_rows
+                or current_key not in used_keys
+            ):
+                _clear_personnel_schedule_cells(
+                    worksheet,
+                    row_number=row_number,
+                    date_columns=date_columns,
+                )
+                worksheet.cell(
+                    row=row_number,
+                    column=PERSONNEL_COLUMN,
+                ).value = None
+
+    return final_rows
+
 def copy_cell_style(
     source_cell,
     target_cell,
@@ -233,6 +540,7 @@ def export_schedule(
     schedule: Schedule,
     year: int,
     month: int,
+    personnel: list[Person] | None = None,
     worksheet_name: str | None = None,
 ) -> Path:
     """
@@ -273,7 +581,18 @@ def export_schedule(
                 f"in worksheet '{selected_worksheet}'."
             )
 
-        personnel_rows = find_personnel_rows(worksheet)
+        if personnel is not None:
+            personnel_rows = sync_personnel_rows(
+                worksheet,
+                personnel=personnel,
+                year=year,
+                month=month,
+                date_columns=date_columns,
+            )
+        else:
+            personnel_rows = find_personnel_rows(
+                worksheet
+            )
 
         if not personnel_rows:
             raise ValueError(

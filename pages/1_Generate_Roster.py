@@ -8,6 +8,7 @@ import streamlit as st
 
 from roster_engine.exporter import export_schedule
 from roster_engine.generator import GenerationSettings
+from roster_engine.generated_roster_repository import GeneratedRosterRepository
 from roster_engine.planning_generation import generate_roster_from_planning
 from roster_engine.planning_loader import load_planning_context
 from roster_engine.database import get_supabase
@@ -646,6 +647,45 @@ if validation_report is not None:
         )
 
 
+can_save_generation = (
+    validation_report is not None
+    and validation_report.is_valid
+)
+
+st.markdown("#### Save generated roster")
+
+generation_notes = st.text_input(
+    "Generation notes",
+    placeholder="Optional note for this roster version",
+    key="generation_notes",
+)
+
+if st.button(
+    "Save generation to Supabase",
+    type="primary",
+    use_container_width=True,
+    key="save_generation_to_supabase",
+    disabled=not can_save_generation,
+):
+    try:
+        stored_generation = GeneratedRosterRepository(
+            get_supabase()
+        ).save_generation(
+            roster_month_id=planning.roster_month.id,
+            result=result,
+            personnel_count=len(planning.personnel),
+            status="draft",
+            notes=generation_notes,
+        )
+    except Exception as exc:
+        st.error(f"Unable to save generated roster: {exc}")
+        st.exception(exc)
+    else:
+        st.success(
+            f"Saved {selected_month:%B %Y} roster "
+            f"as version {stored_generation.version}."
+        )
+
 can_export = (
     roster_complete
     and validation_report is not None
@@ -680,6 +720,7 @@ else:
                     schedule=result.schedule,
                     year=selected_month.year,
                     month=selected_month.month,
+                    personnel=planning.personnel,
                 )
 
                 output_bytes = (
