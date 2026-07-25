@@ -131,6 +131,35 @@ def get_availability_code(availability_rows, person_name: str, current_date: dat
     return None
 
 
+def is_before_leaving_date(person_record, current_date: date) -> bool:
+    """
+    leaving_date is treated as the first date the person is no longer usable.
+    A person may therefore only be manually planned on dates strictly before it.
+    """
+    leaving_date = person_record.person.leaving_date
+    return leaving_date is None or current_date < leaving_date
+
+
+def personnel_available_on(
+    person_by_name: dict,
+    current_date: date,
+    *,
+    cover_fit_only: bool = False,
+) -> list[str]:
+    names = []
+
+    for name, record in person_by_name.items():
+        if not is_before_leaving_date(record, current_date):
+            continue
+
+        if cover_fit_only and record.person.is_cover_fit is not True:
+            continue
+
+        names.append(name)
+
+    return sorted(names)
+
+
 months = load_roster_months()
 personnel = load_personnel()
 
@@ -166,11 +195,28 @@ availability_rows = load_availability(
     month=selected_month.month,
 )
 
-active_people = [record for record in personnel if record.person.is_active]
-person_by_name = {record.person.name: record for record in active_people}
+active_people = [
+    record
+    for record in personnel
+    if (
+        record.person.is_active
+        and (
+            record.person.leaving_date is None
+            or record.person.leaving_date > selected_month
+        )
+    )
+]
+
+person_by_name = {
+    record.person.name: record
+    for record in active_people
+}
+
 all_person_names = sorted(person_by_name)
 cover_fit_names = sorted(
-    record.person.name for record in active_people if record.person.is_cover_fit is True
+    record.person.name
+    for record in active_people
+    if record.person.is_cover_fit is True
 )
 
 m1, m2, m3, m4 = st.columns(4)
@@ -203,11 +249,17 @@ with duty_tab:
             key="manual_duty_date",
         )
 
+    duty_person_options = personnel_available_on(
+        person_by_name,
+        duty_date,
+    )
+
     with c2:
         duty_person = st.selectbox(
             "Personnel",
-            all_person_names,
-            key="manual_duty_person",
+            duty_person_options,
+            key=f"manual_duty_person_{duty_date.isoformat()}",
+            disabled=not duty_person_options,
         )
 
     with c3:
@@ -235,20 +287,34 @@ with duty_tab:
         key="manual_duty_remarks",
     )
 
-    availability_code = get_availability_code(
-        availability_rows,
-        duty_person,
-        duty_date,
+    availability_code = (
+        get_availability_code(
+            availability_rows,
+            duty_person,
+            duty_date,
+        )
+        if duty_person
+        else None
     )
 
-    existing_same_day = [
-        row
-        for row in manual_assignments
-        if (
-            row.personnel_name == duty_person
-            and row.assignment_date == duty_date
+    existing_same_day = (
+        [
+            row
+            for row in manual_assignments
+            if (
+                row.personnel_name == duty_person
+                and row.assignment_date == duty_date
+            )
+        ]
+        if duty_person
+        else []
+    )
+
+    if not duty_person_options:
+        st.warning(
+            "No active personnel remain eligible for manual duty "
+            "on this date after applying leaving dates."
         )
-    ]
 
     if availability_code:
         st.warning(
@@ -268,6 +334,7 @@ with duty_tab:
         type="primary",
         use_container_width=True,
         key="lock_manual_duty_button",
+        disabled=not duty_person_options,
     ):
         payload = {
             "roster_month_id": roster_month_id,
@@ -318,8 +385,19 @@ with cover_tab:
             if req.includes_date(cover_date)
         ]
 
+        cover_fit_options = personnel_available_on(
+            person_by_name,
+            cover_date,
+            cover_fit_only=True,
+        )
+
         if not available_requirements:
             st.info("No cover requirements exist on this date.")
+        elif not cover_fit_options:
+            st.warning(
+                "No active Cover Fit personnel remain eligible on this date "
+                "after applying leaving dates."
+            )
         else:
             requirement_by_id = {req.id: req for req in available_requirements}
 
@@ -338,7 +416,9 @@ with cover_tab:
                 "Assignment", ["Active cover", "FC reserve"], horizontal=True
             )
             cover_person = st.selectbox(
-                "Cover Fit personnel", cover_fit_names, key="manual_cover_person"
+                "Cover Fit personnel",
+                cover_fit_options,
+                key=f"manual_cover_person_{cover_date.isoformat()}",
             )
 
             availability_code = get_availability_code(
@@ -402,16 +482,31 @@ with interest_tab:
             key="duty_interest_date",
         )
 
+    interest_person_options = personnel_available_on(
+        person_by_name,
+        interest_date,
+    )
+
     with c2:
         interest_person = st.selectbox(
             "Personnel",
-            all_person_names,
-            key="duty_interest_person",
+            interest_person_options,
+            key=f"duty_interest_person_{interest_date.isoformat()}",
+            disabled=not interest_person_options,
         )
 
-    selected_person_record = person_by_name[interest_person]
-    actual_eligible_roles = eligible_overnight_roles(
-        selected_person_record
+    selected_person_record = (
+        person_by_name[interest_person]
+        if interest_person
+        else None
+    )
+
+    actual_eligible_roles = (
+        eligible_overnight_roles(
+            selected_person_record
+        )
+        if selected_person_record
+        else []
     )
 
     with c3:
@@ -430,7 +525,12 @@ with interest_tab:
             ),
         )
 
-    if actual_eligible_roles:
+    if not interest_person_options:
+        st.warning(
+            "No active personnel remain eligible for PTMC overnight interest "
+            "on this date after applying leaving dates."
+        )
+    elif actual_eligible_roles:
         st.caption(
             "Eligible overnight roles: "
             + ", ".join(actual_eligible_roles)
@@ -447,10 +547,14 @@ with interest_tab:
         key="duty_interest_remarks",
     )
 
-    availability_code = get_availability_code(
-        availability_rows,
-        interest_person,
-        interest_date,
+    availability_code = (
+        get_availability_code(
+            availability_rows,
+            interest_person,
+            interest_date,
+        )
+        if interest_person
+        else None
     )
 
     if availability_code:
@@ -465,7 +569,10 @@ with interest_tab:
         type="primary",
         use_container_width=True,
         key="add_duty_interest_button",
-        disabled=not actual_eligible_roles,
+        disabled=(
+            not interest_person_options
+            or not actual_eligible_roles
+        ),
     )
 
     if submit_interest:
@@ -604,6 +711,280 @@ with review_tab:
                 "Date": st.column_config.DateColumn("Date", format="DD MMM"),
             },
         )
+
+        st.divider()
+        st.markdown("#### Edit or delete locked assignment")
+
+        assignment_lookup = {
+            row.id: row
+            for row in manual_assignments
+        }
+
+        selected_assignment_id = st.selectbox(
+            "Locked assignment",
+            options=list(assignment_lookup),
+            format_func=lambda assignment_id: (
+                f"{assignment_lookup[assignment_id].assignment_date:%d %b} — "
+                f"{assignment_lookup[assignment_id].personnel_name} — "
+                f"{assignment_lookup[assignment_id].assignment_kind.replace('_', ' ').title()} — "
+                f"{assignment_lookup[assignment_id].qualified_role or assignment_lookup[assignment_id].cover_label or ''}"
+            ),
+            key="edit_locked_assignment_selector",
+        )
+
+        selected_assignment = assignment_lookup[
+            selected_assignment_id
+        ]
+
+        edit_date = st.date_input(
+            "Assignment date",
+            value=selected_assignment.assignment_date,
+            min_value=selected_month,
+            max_value=selected_month_end,
+            format="DD/MM/YYYY",
+            key=f"edit_assignment_date_{selected_assignment_id}",
+        )
+
+        edit_person_options = personnel_available_on(
+            person_by_name,
+            edit_date,
+            cover_fit_only=(
+                selected_assignment.assignment_kind
+                in {"COVER", "COVER_RESERVE"}
+            ),
+        )
+
+        selected_assignment_person_record = person_by_name.get(
+            selected_assignment.personnel_name
+        )
+
+        if (
+            selected_assignment.personnel_name
+            not in edit_person_options
+            and selected_assignment_person_record is not None
+            and is_before_leaving_date(
+                selected_assignment_person_record,
+                edit_date,
+            )
+        ):
+            edit_person_options = sorted(
+                {
+                    *edit_person_options,
+                    selected_assignment.personnel_name,
+                }
+            )
+
+        if not edit_person_options:
+            st.warning(
+                "No eligible personnel are available for this assignment date."
+            )
+
+        edit_person = st.selectbox(
+            "Personnel",
+            options=edit_person_options,
+            index=(
+                edit_person_options.index(
+                    selected_assignment.personnel_name
+                )
+                if selected_assignment.personnel_name
+                in edit_person_options
+                else 0
+            ) if edit_person_options else 0,
+            key=f"edit_assignment_person_{selected_assignment_id}_{edit_date.isoformat()}",
+            disabled=not edit_person_options,
+        )
+
+        edit_override = st.checkbox(
+            "Allow override",
+            value=selected_assignment.allow_override,
+            key=f"edit_assignment_override_{selected_assignment_id}",
+        )
+
+        edit_remarks = st.text_input(
+            "Remarks",
+            value=selected_assignment.remarks or "",
+            key=f"edit_assignment_remarks_{selected_assignment_id}",
+        )
+
+        edit_payload = {
+            "personnel_name": edit_person if edit_person_options else selected_assignment.personnel_name,
+            "assignment_date": edit_date.isoformat(),
+            "allow_override": bool(edit_override),
+            "remarks": edit_remarks.strip() or None,
+        }
+
+        if selected_assignment.assignment_kind == "DUTY":
+            duty_edit_cols = st.columns(2)
+
+            with duty_edit_cols[0]:
+                edit_centre = st.selectbox(
+                    "Centre",
+                    CENTRES,
+                    index=CENTRES.index(
+                        selected_assignment.centre
+                        if selected_assignment.centre in CENTRES
+                        else "PT"
+                    ),
+                    key=f"edit_assignment_centre_{selected_assignment_id}",
+                )
+
+            with duty_edit_cols[1]:
+                edit_role = st.selectbox(
+                    "Role",
+                    DUTY_ROLES,
+                    index=DUTY_ROLES.index(
+                        selected_assignment.role_name
+                        if selected_assignment.role_name in DUTY_ROLES
+                        else DUTY_ROLES[0]
+                    ),
+                    key=f"edit_assignment_role_{selected_assignment_id}",
+                )
+
+            edit_payload.update({
+                "centre": edit_centre,
+                "role_name": edit_role,
+                "session": "FULL_DAY",
+                "cover_requirement_id": None,
+                "cover_label": None,
+            })
+
+        else:
+            matching_requirements = [
+                req
+                for req in cover_requirements
+                if req.includes_date(edit_date)
+            ]
+
+            if matching_requirements:
+                edit_requirement_lookup = {
+                    req.id: req
+                    for req in matching_requirements
+                }
+
+                current_requirement_id = (
+                    selected_assignment.cover_requirement_id
+                    if selected_assignment.cover_requirement_id
+                    in edit_requirement_lookup
+                    else next(iter(edit_requirement_lookup))
+                )
+
+                edit_requirement_id = st.selectbox(
+                    "Cover requirement",
+                    options=list(edit_requirement_lookup),
+                    index=list(edit_requirement_lookup).index(
+                        current_requirement_id
+                    ),
+                    format_func=lambda req_id: (
+                        f"{edit_requirement_lookup[req_id].requesting_unit} — "
+                        f"{edit_requirement_lookup[req_id].cover_type} "
+                        f"({SESSION_LABELS.get(edit_requirement_lookup[req_id].session, edit_requirement_lookup[req_id].session)})"
+                    ),
+                    key=f"edit_assignment_cover_req_{selected_assignment_id}_{edit_date.isoformat()}",
+                )
+
+                edit_requirement = edit_requirement_lookup[
+                    edit_requirement_id
+                ]
+
+                edit_kind_label = st.radio(
+                    "Assignment",
+                    ["Active cover", "FC reserve"],
+                    index=(
+                        1
+                        if selected_assignment.assignment_kind == "COVER_RESERVE"
+                        else 0
+                    ),
+                    horizontal=True,
+                    key=f"edit_assignment_cover_kind_{selected_assignment_id}",
+                )
+
+                edit_kind = (
+                    "COVER_RESERVE"
+                    if edit_kind_label == "FC reserve"
+                    else "COVER"
+                )
+
+                edit_label = (
+                    "FC RESERVE"
+                    if edit_kind == "COVER_RESERVE"
+                    else (
+                        f"{edit_requirement.requesting_unit} — "
+                        f"{edit_requirement.cover_type}"
+                    )
+                )
+
+                edit_payload.update({
+                    "assignment_kind": edit_kind,
+                    "centre": None,
+                    "role_name": None,
+                    "cover_requirement_id": edit_requirement_id,
+                    "cover_label": edit_label,
+                    "session": edit_requirement.session,
+                })
+            else:
+                st.warning(
+                    "No cover requirement exists on the edited date. "
+                    "Save is disabled until a valid requirement is available."
+                )
+
+        action_cols = st.columns(2)
+
+        with action_cols[0]:
+            save_disabled = (
+                not edit_person_options
+                or (
+                    selected_assignment.assignment_kind
+                    in {"COVER", "COVER_RESERVE"}
+                    and not matching_requirements
+                )
+            )
+
+            if st.button(
+                "Save changes",
+                type="primary",
+                use_container_width=True,
+                key=f"save_locked_assignment_{selected_assignment_id}",
+                disabled=save_disabled,
+            ):
+                try:
+                    (
+                        get_supabase()
+                        .table("roster_manual_assignments")
+                        .update(edit_payload)
+                        .eq("id", selected_assignment_id)
+                        .execute()
+                    )
+                except Exception as exc:
+                    st.error(
+                        f"Unable to update locked assignment: {exc}"
+                    )
+                else:
+                    clear_manual_cache()
+                    st.success("Locked assignment updated.")
+                    st.rerun()
+
+        with action_cols[1]:
+            if st.button(
+                "Delete assignment",
+                use_container_width=True,
+                key=f"delete_locked_assignment_{selected_assignment_id}",
+            ):
+                try:
+                    (
+                        get_supabase()
+                        .table("roster_manual_assignments")
+                        .delete()
+                        .eq("id", selected_assignment_id)
+                        .execute()
+                    )
+                except Exception as exc:
+                    st.error(
+                        f"Unable to delete locked assignment: {exc}"
+                    )
+                else:
+                    clear_manual_cache()
+                    st.success("Locked assignment deleted.")
+                    st.rerun()
 
     st.divider()
     st.subheader("PTMC Overnight Interests")
