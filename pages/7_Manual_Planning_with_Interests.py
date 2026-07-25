@@ -558,19 +558,20 @@ with review_tab:
         rows = []
         for row in manual_assignments:
             details = (
-                f"{row.get('centre') or ''} {row.get('role_name') or ''}".strip()
-                if row["assignment_kind"] == "DUTY"
-                else row.get("cover_label") or row["assignment_kind"]
+                row.qualified_role or ""
+                if row.assignment_kind == "DUTY"
+                else row.cover_label or row.assignment_kind
             )
+
             rows.append({
-                "ID": row["id"],
-                "Date": date.fromisoformat(str(row["assignment_date"])),
-                "Personnel": row["personnel_name"],
-                "Kind": str(row["assignment_kind"]).replace("_", " ").title(),
+                "ID": row.id,
+                "Date": row.assignment_date,
+                "Personnel": row.personnel_name,
+                "Kind": row.assignment_kind.replace("_", " ").title(),
                 "Details": details,
-                "Locked": bool(row["is_locked"]),
-                "Override": bool(row["allow_override"]),
-                "Remarks": row.get("remarks") or "",
+                "Locked": row.is_locked,
+                "Override": row.allow_override,
+                "Remarks": row.remarks or "",
             })
 
         st.dataframe(
