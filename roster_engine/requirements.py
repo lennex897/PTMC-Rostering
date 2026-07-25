@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from roster_engine.models import DutyRequirement
+from roster_engine.roster_rules import RosterRules
 
 
 # Monday = 0, Sunday = 6
@@ -13,6 +14,17 @@ THURSDAY = 3
 FRIDAY = 4
 SATURDAY = 5
 SUNDAY = 6
+
+
+DAY_NAME_TO_INDEX = {
+    "MON": MONDAY,
+    "TUE": TUESDAY,
+    "WED": WEDNESDAY,
+    "THU": THURSDAY,
+    "FRI": FRIDAY,
+    "SAT": SATURDAY,
+    "SUN": SUNDAY,
+}
 
 
 PT_CORE_OVERNIGHT_ROLES = (
@@ -29,6 +41,8 @@ RH_DAYTIME_ROLES = (
     "RH AE",
 )
 
+# Legacy/default constants remain for compatibility. Live planning generation
+# now derives these sets from RosterRules.
 PT_CSB_DAYS = {
     MONDAY,
     THURSDAY,
@@ -69,50 +83,62 @@ class RequirementSettings:
     include_rh_sb2_deployment: bool = True
     include_rh_daytime_roles: bool = True
 
-    # Dates listed here will not receive RH daytime duties.
     public_holidays: frozenset[date] = field(
         default_factory=frozenset
     )
 
 
+def _weekday_indexes(
+    day_names: tuple[str, ...],
+) -> set[int]:
+    indexes: set[int] = set()
+
+    for raw_name in day_names:
+        name = str(raw_name).strip().upper()
+
+        if name not in DAY_NAME_TO_INDEX:
+            raise ValueError(
+                f"Unknown roster weekday value: {raw_name!r}"
+            )
+
+        indexes.add(
+            DAY_NAME_TO_INDEX[name]
+        )
+
+    return indexes
+
+
 def overnight_points_for_date(
     duty_date: date,
+    rules: RosterRules | None = None,
 ) -> float:
-    """
-    Overnight point values:
-
-    Monday–Thursday: 1 point
-    Friday: 1.5 points
-    Saturday–Sunday: 2 points
-
-    Public holidays currently retain the normal value for
-    their respective weekday, as stated in the rulebook.
-    """
+    if rules is None:
+        rules = RosterRules()
 
     weekday = duty_date.weekday()
 
     if weekday == FRIDAY:
-        return 1.5
+        return rules.overnight_friday_points
 
     if weekday in {SATURDAY, SUNDAY}:
-        return 2.0
+        return rules.overnight_weekend_points
 
-    return 1.0
+    return rules.overnight_weekday_points
 
 
-def day_duty_points() -> float:
-    return 0.5
+def day_duty_points(
+    rules: RosterRules | None = None,
+) -> float:
+    if rules is None:
+        rules = RosterRules()
+
+    return rules.day_duty_points
 
 
 def is_rh_working_day(
     duty_date: date,
     public_holidays: frozenset[date],
 ) -> bool:
-    """
-    RH operates daytime duties on Mondays to Fridays,
-    excluding public holidays.
-    """
-
     return (
         duty_date.weekday() < SATURDAY
         and duty_date not in public_holidays
@@ -122,15 +148,33 @@ def is_rh_working_day(
 def requirements_for_date(
     duty_date: date,
     settings: RequirementSettings | None = None,
+    rules: RosterRules | None = None,
 ) -> list[DutyRequirement]:
     if settings is None:
         settings = RequirementSettings()
 
+    if rules is None:
+        rules = RosterRules()
+
     requirements: list[DutyRequirement] = []
     weekday = duty_date.weekday()
 
+    pt_csb_days = _weekday_indexes(
+        rules.pt_csb_days
+    )
+    pt_sb2_days = _weekday_indexes(
+        rules.pt_sb2_days
+    )
+    rh_sb1_days = _weekday_indexes(
+        rules.rh_sb1_deployment_days
+    )
+    rh_sb2_days = _weekday_indexes(
+        rules.rh_sb2_deployment_days
+    )
+
     overnight_points = overnight_points_for_date(
-        duty_date
+        duty_date,
+        rules=rules,
     )
 
     if settings.include_pt_core_roles:
@@ -147,7 +191,7 @@ def requirements_for_date(
 
     if (
         settings.include_pt_csb
-        and weekday in PT_CSB_DAYS
+        and weekday in pt_csb_days
     ):
         requirements.append(
             DutyRequirement(
@@ -161,7 +205,7 @@ def requirements_for_date(
 
     if (
         settings.include_pt_sb2
-        and weekday in PT_SB2_DAYS
+        and weekday in pt_sb2_days
     ):
         requirements.append(
             DutyRequirement(
@@ -175,7 +219,7 @@ def requirements_for_date(
 
     if (
         settings.include_rh_sb1_deployment
-        and weekday in RH_SB1_DEPLOYMENT_DAYS
+        and weekday in rh_sb1_days
     ):
         requirements.append(
             DutyRequirement(
@@ -189,7 +233,7 @@ def requirements_for_date(
 
     if (
         settings.include_rh_sb2_deployment
-        and weekday in RH_SB2_DEPLOYMENT_DAYS
+        and weekday in rh_sb2_days
     ):
         requirements.append(
             DutyRequirement(
@@ -215,7 +259,9 @@ def requirements_for_date(
                     role=role,
                     centre="RH",
                     is_overnight=False,
-                    points=day_duty_points(),
+                    points=day_duty_points(
+                        rules=rules
+                    ),
                 )
             )
 
@@ -226,6 +272,7 @@ def generate_month_requirements(
     year: int,
     month: int,
     settings: RequirementSettings | None = None,
+    rules: RosterRules | None = None,
 ) -> list[DutyRequirement]:
     if not 1 <= month <= 12:
         raise ValueError(
@@ -234,6 +281,9 @@ def generate_month_requirements(
 
     if settings is None:
         settings = RequirementSettings()
+
+    if rules is None:
+        rules = RosterRules()
 
     days_in_month = monthrange(
         year,
@@ -256,6 +306,7 @@ def generate_month_requirements(
             requirements_for_date(
                 duty_date=duty_date,
                 settings=settings,
+                rules=rules,
             )
         )
 

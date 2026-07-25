@@ -3,9 +3,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from roster_engine.duty_interest_repository import DutyInterest
-from roster_engine.eligibility import (
-    eligible_people_for_role,
-)
+from roster_engine.eligibility import eligible_people_for_role
 from roster_engine.models import (
     Assignment,
     AvailabilityEntry,
@@ -90,10 +88,8 @@ def selected_departments_for_date(
 ) -> frozenset[str]:
     departments: set[str] = set()
 
-    for assignment in (
-        schedule.assignments_for_date(
-            duty_date
-        )
+    for assignment in schedule.assignments_for_date(
+        duty_date
     ):
         if assignment.centre != centre:
             continue
@@ -119,18 +115,17 @@ def generate_schedule(
     *,
     personnel: list[Person],
     requirements: list[DutyRequirement],
-    availability_entries: list[
-        AvailabilityEntry
-    ],
+    availability_entries: list[AvailabilityEntry],
     historical_schedule: Schedule | None = None,
     role_priorities: tuple[
         RolePriority,
         ...
     ] | None = None,
     maximum_weekly_overnights: int = 3,
-    initial_assignments: list[
-        Assignment
-    ] | None = None,
+    overnight_min_break_days: int = 1,
+    leaving_reduction_days: int = 90,
+    manual_only_personnel: tuple[str, ...] | list[str] | set[str] = (),
+    initial_assignments: list[Assignment] | None = None,
     blocked_people_by_date: dict[
         date,
         set[str],
@@ -144,16 +139,15 @@ def generate_schedule(
         ...
     ] | list[DutyInterest] | None = None,
 ) -> SchedulerResult:
-    """
-    Generate remaining duty requirements.
-
-    duty_interests are soft preferences only. They influence candidate
-    scores after hard eligibility filtering and only for overnight duties.
-    """
     if role_priorities is None:
         role_priorities = (
             DEFAULT_ROLE_PRIORITIES
         )
+
+    manual_only_names = {
+        normalise_text(name)
+        for name in manual_only_personnel
+    }
 
     blocked_people_by_date = {
         duty_date: {
@@ -228,9 +222,7 @@ def generate_schedule(
         assigned_names = (
             people_already_assigned_on_date(
                 schedule=schedule,
-                duty_date=(
-                    requirement.duty_date
-                ),
+                duty_date=requirement.duty_date,
             )
         )
 
@@ -245,23 +237,19 @@ def generate_schedule(
             person
             for person in eligible_people
             if (
-                normalise_text(
-                    person.name
-                )
+                normalise_text(person.name)
                 not in assigned_names
-                and normalise_text(
-                    person.name
-                )
+                and normalise_text(person.name)
                 not in externally_blocked
+                and normalise_text(person.name)
+                not in manual_only_names
             )
         ]
 
         selected_departments = (
             selected_departments_for_date(
                 schedule=schedule,
-                duty_date=(
-                    requirement.duty_date
-                ),
+                duty_date=requirement.duty_date,
                 personnel_by_name=(
                     personnel_by_name
                 ),
@@ -279,6 +267,12 @@ def generate_schedule(
             maximum_weekly_overnights=(
                 maximum_weekly_overnights
             ),
+            overnight_min_break_days=(
+                overnight_min_break_days
+            ),
+            leaving_reduction_days=(
+                leaving_reduction_days
+            ),
             is_overnight=(
                 requirement.is_overnight
             ),
@@ -293,17 +287,14 @@ def generate_schedule(
             ),
         )
 
-        ranked_candidates = (
-            rank_candidates(
-                personnel=eligible_people,
-                context=context,
-            )
+        ranked_candidates = rank_candidates(
+            personnel=eligible_people,
+            context=context,
         )
 
         selectable_candidates = [
             candidate
-            for candidate
-            in ranked_candidates
+            for candidate in ranked_candidates
             if candidate.is_selectable
         ]
 

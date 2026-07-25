@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from math import ceil
 
 from supabase import Client
+
+from roster_engine.roster_rules import RosterRules
 
 
 COVER_TYPES_TABLE = "roster_cover_types"
@@ -139,9 +140,21 @@ class CoverRepository:
     def expand_daily_slots(
         self,
         requirements: list[CoverRequirement],
+        *,
+        rules: RosterRules | None = None,
     ) -> list[DailyCoverSlot]:
+        """
+        Expand cover requirements into daily staffing slots.
+
+        FC reserve count is now rule-driven. Whenever at least one FC is
+        active on a date, exactly rules.fc_reserve_count shared FC reserve
+        slots are created, regardless of the number of overlapping FCs.
+        """
+        if rules is None:
+            rules = RosterRules()
+
         slots: list[DailyCoverSlot] = []
-        fc_counts: dict[date, int] = {}
+        active_fc_dates: set[date] = set()
 
         for requirement in requirements:
             for current_date in requirement.dates():
@@ -161,14 +174,18 @@ class CoverRepository:
                     )
 
                 if requirement.cover_category == "FC":
-                    fc_counts[current_date] = (
-                        fc_counts.get(current_date, 0)
-                        + requirement.personnel_required
+                    active_fc_dates.add(
+                        current_date
                     )
 
-        for current_date, active_fc in sorted(fc_counts.items()):
-            reserve_count = ceil(active_fc / 2)
+        reserve_count = max(
+            0,
+            int(rules.fc_reserve_count),
+        )
 
+        for current_date in sorted(
+            active_fc_dates
+        ):
             for _ in range(reserve_count):
                 slots.append(
                     DailyCoverSlot(

@@ -33,19 +33,11 @@ class PlanningGenerationResult:
 
     @property
     def locked_cover_assignments(self) -> list[CoverAssignment]:
-        return [
-            assignment
-            for assignment in self.cover_assignments
-            if assignment.is_locked
-        ]
+        return [a for a in self.cover_assignments if a.is_locked]
 
     @property
     def generated_cover_assignments(self) -> list[CoverAssignment]:
-        return [
-            assignment
-            for assignment in self.cover_assignments
-            if not assignment.is_locked
-        ]
+        return [a for a in self.cover_assignments if not a.is_locked]
 
     @property
     def covers_complete(self) -> bool:
@@ -60,9 +52,7 @@ def _duty_key(requirement: DutyRequirement) -> tuple[date, str]:
     return requirement.duty_date, _normalise(requirement.role)
 
 
-def _manual_duty_key(
-    assignment: ManualAssignment,
-) -> tuple[date, str] | None:
+def _manual_duty_key(assignment: ManualAssignment) -> tuple[date, str] | None:
     role = assignment.qualified_role
     if not role:
         return None
@@ -74,16 +64,13 @@ def _split_locked_manual_assignments(
 ) -> tuple[list[ManualAssignment], list[ManualAssignment]]:
     duties: list[ManualAssignment] = []
     covers: list[ManualAssignment] = []
-
     for assignment in manual_assignments:
         if not assignment.is_locked:
             continue
-
         if assignment.assignment_kind == "DUTY":
             duties.append(assignment)
         elif assignment.assignment_kind in {"COVER", "COVER_RESERVE"}:
             covers.append(assignment)
-
     return duties, covers
 
 
@@ -97,18 +84,17 @@ def _apply_locked_duties(
 
     for manual in manual_duties:
         key = _manual_duty_key(manual)
-
         if key is None:
-            raise ValueError(
-                f"Locked manual duty {manual.id} has no role."
-            )
+            raise ValueError(f"Locked manual duty {manual.id} has no role.")
 
-        match_index = None
-
-        for index, requirement in enumerate(remaining):
-            if _duty_key(requirement) == key:
-                match_index = index
-                break
+        match_index = next(
+            (
+                index
+                for index, requirement in enumerate(remaining)
+                if _duty_key(requirement) == key
+            ),
+            None,
+        )
 
         if match_index is None:
             raise ValueError(
@@ -118,7 +104,6 @@ def _apply_locked_duties(
             )
 
         requirement = remaining.pop(match_index)
-
         locked_assignments.append(
             Assignment(
                 duty_date=requirement.duty_date,
@@ -141,20 +126,17 @@ def _consume_cover_slot(
     for index, slot in enumerate(slots):
         if slot.duty_date != manual.assignment_date:
             continue
-
         if manual.assignment_kind == "COVER_RESERVE":
             if not slot.is_reserve:
                 continue
         else:
             if slot.is_reserve:
                 continue
-
             if (
                 manual.cover_requirement_id
                 and slot.cover_requirement_id != manual.cover_requirement_id
             ):
                 continue
-
         return slots.pop(index)
 
     raise ValueError(
@@ -177,7 +159,6 @@ def _apply_locked_covers(
             slots=remaining_slots,
             manual=manual,
         )
-
         assignments.append(
             CoverAssignment(
                 duty_date=manual.assignment_date,
@@ -200,10 +181,10 @@ def _cover_blocked_people(
     cover_assignments: list[CoverAssignment],
 ) -> dict[date, set[str]]:
     blocked: dict[date, set[str]] = defaultdict(set)
-
     for assignment in cover_assignments:
+        if assignment.cover_type == "FC SWAP":
+            continue
         blocked[assignment.duty_date].add(assignment.person_name)
-
     return dict(blocked)
 
 
@@ -211,10 +192,8 @@ def _cover_points(
     cover_assignments: list[CoverAssignment],
 ) -> dict[str, float]:
     points: dict[str, float] = defaultdict(float)
-
     for assignment in cover_assignments:
         points[_normalise(assignment.person_name)] += assignment.points
-
     return dict(points)
 
 
@@ -225,10 +204,13 @@ def generate_roster_from_planning(
     historical_schedule: Schedule | None = None,
     role_priorities: tuple[RolePriority, ...] | None = None,
 ) -> PlanningGenerationResult:
+    rules = planning.roster_rules
+
     requirements = generate_month_requirements(
         year=settings.year,
         month=settings.month,
         settings=settings.requirement_settings,
+        rules=rules,
     )
 
     manual_duties, manual_covers = _split_locked_manual_assignments(
@@ -252,6 +234,7 @@ def generate_roster_from_planning(
         locked_duties=locked_duties,
         locked_cover_assignments=locked_covers,
         historical_schedule=historical_schedule,
+        rules=rules,
     )
 
     all_cover_assignments = cover_result.assignments
@@ -264,7 +247,10 @@ def generate_roster_from_planning(
         availability_entries=planning.availability_entries,
         historical_schedule=historical_schedule,
         role_priorities=role_priorities,
-        maximum_weekly_overnights=settings.maximum_weekly_overnights,
+        maximum_weekly_overnights=rules.maximum_weekly_overnights,
+        overnight_min_break_days=rules.overnight_min_break_days,
+        leaving_reduction_days=rules.leaving_reduction_days,
+        manual_only_personnel=rules.manual_only_personnel,
         initial_assignments=locked_duties,
         blocked_people_by_date=blocked_people_by_date,
         point_offsets_by_person=cover_points_by_person,

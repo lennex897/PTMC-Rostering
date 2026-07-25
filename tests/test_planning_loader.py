@@ -16,4 +16,5 @@ def test_planning_context_has_expected_fields() -> None:
         "cover_slots",
         "manual_assignments",
         "duty_interests",
+        "roster_rules",
     }

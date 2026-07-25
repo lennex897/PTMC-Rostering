@@ -56,22 +56,14 @@ class ScoreComponent:
 class CandidateScore:
     person: Person
     total: float = 0.0
-    components: list[ScoreComponent] = field(
-        default_factory=list
-    )
-    blocked_reasons: list[str] = field(
-        default_factory=list
-    )
+    components: list[ScoreComponent] = field(default_factory=list)
+    blocked_reasons: list[str] = field(default_factory=list)
 
     @property
     def is_selectable(self) -> bool:
         return not self.blocked_reasons
 
-    def add(
-        self,
-        description: str,
-        value: float,
-    ) -> None:
+    def add(self, description: str, value: float) -> None:
         self.components.append(
             ScoreComponent(
                 description=description,
@@ -80,10 +72,7 @@ class CandidateScore:
         )
         self.total += value
 
-    def block(
-        self,
-        reason: str,
-    ) -> None:
+    def block(self, reason: str) -> None:
         if reason not in self.blocked_reasons:
             self.blocked_reasons.append(reason)
 
@@ -95,28 +84,20 @@ class ScoringContext:
     schedule: Schedule
     selected_departments: frozenset[str] = frozenset()
     maximum_weekly_overnights: int = 3
+    overnight_min_break_days: int = 1
+    leaving_reduction_days: int = 90
     is_overnight: bool | None = None
-    role_priorities: tuple[RolePriority, ...] = (
-        DEFAULT_ROLE_PRIORITIES
-    )
-    point_offsets_by_person: dict[str, float] = field(
-        default_factory=dict
-    )
+    role_priorities: tuple[RolePriority, ...] = DEFAULT_ROLE_PRIORITIES
+    point_offsets_by_person: dict[str, float] = field(default_factory=dict)
     duty_interests: tuple[DutyInterest, ...] = ()
     duty_interest_bonus: float = DEFAULT_DUTY_INTEREST_BONUS
 
 
-def normalise_text(
-    value: str,
-) -> str:
-    return " ".join(
-        value.strip().upper().split()
-    )
+def normalise_text(value: str) -> str:
+    return " ".join(value.strip().upper().split())
 
 
-def is_overnight_role(
-    role: str,
-) -> bool:
+def is_overnight_role(role: str) -> bool:
     return normalise_text(role).startswith("PT ")
 
 
@@ -132,15 +113,10 @@ def assignments_in_week(
 
     return [
         assignment
-        for assignment
-        in schedule.assignments_for_person(
+        for assignment in schedule.assignments_for_person(
             person.name
         )
-        if (
-            week_start
-            <= assignment.duty_date
-            <= week_end
-        )
+        if week_start <= assignment.duty_date <= week_end
     ]
 
 
@@ -150,8 +126,7 @@ def overnight_assignments(
 ):
     return [
         assignment
-        for assignment
-        in schedule.assignments_for_person(
+        for assignment in schedule.assignments_for_person(
             person.name
         )
         if assignment.is_overnight
@@ -165,8 +140,7 @@ def last_overnight_before(
 ):
     previous_assignments = [
         assignment
-        for assignment
-        in overnight_assignments(
+        for assignment in overnight_assignments(
             person,
             schedule,
         )
@@ -178,9 +152,7 @@ def last_overnight_before(
 
     return max(
         previous_assignments,
-        key=lambda assignment: (
-            assignment.duty_date
-        ),
+        key=lambda assignment: assignment.duty_date,
     )
 
 
@@ -188,12 +160,8 @@ def apply_role_priorities(
     result: CandidateScore,
     context: ScoringContext,
 ) -> None:
-    person_name = normalise_text(
-        result.person.name
-    )
-    role = normalise_text(
-        context.role
-    )
+    person_name = normalise_text(result.person.name)
+    role = normalise_text(context.role)
 
     for priority in context.role_priorities:
         if not priority.applies_on(
@@ -201,16 +169,10 @@ def apply_role_priorities(
         ):
             continue
 
-        if (
-            normalise_text(priority.person_name)
-            != person_name
-        ):
+        if normalise_text(priority.person_name) != person_name:
             continue
 
-        if (
-            normalise_text(priority.role)
-            != role
-        ):
+        if normalise_text(priority.role) != role:
             continue
 
         result.add(
@@ -228,74 +190,41 @@ def apply_duty_interest(
     *,
     is_overnight: bool,
 ) -> None:
-    """
-    Apply PTMC overnight interest as a soft preference only.
-
-    Interest never makes a candidate eligible and never bypasses hard
-    constraints. Eligibility filtering occurs before scoring in scheduler.py.
-
-    An interest with preferred_role=None means "any eligible overnight role".
-    """
     if not is_overnight:
         return
 
-    person_name = normalise_text(
-        result.person.name
-    )
-    role = normalise_text(
-        context.role
-    )
+    person_name = normalise_text(result.person.name)
+    role = normalise_text(context.role)
 
     matching_interests = [
         interest
         for interest in context.duty_interests
         if (
-            normalise_text(
-                interest.person_name
-            )
-            == person_name
-            and interest.interest_date
-            == context.duty_date
-            and interest.applies_to_role(
-                role
-            )
+            normalise_text(interest.person_name) == person_name
+            and interest.interest_date == context.duty_date
+            and interest.applies_to_role(role)
         )
     ]
 
-    if not matching_interests:
-        return
-
-    # Multiple duplicate interests should not stack bonuses.
-    result.add(
-        description=(
-            "PTMC overnight duty interest"
-        ),
-        value=context.duty_interest_bonus,
-    )
+    if matching_interests:
+        result.add(
+            description="PTMC overnight duty interest",
+            value=context.duty_interest_bonus,
+        )
 
 
 def score_candidate(
     person: Person,
     context: ScoringContext,
 ) -> CandidateScore:
-    result = CandidateScore(
-        person=person
-    )
+    result = CandidateScore(person=person)
 
-    role = normalise_text(
-        context.role
-    )
-    department = normalise_text(
-        person.department
-    )
-    person_key = normalise_text(
+    role = normalise_text(context.role)
+    department = normalise_text(person.department)
+    person_key = normalise_text(person.name)
+
+    scheduled_points = context.schedule.total_points_for_person(
         person.name
-    )
-
-    scheduled_points = (
-        context.schedule.total_points_for_person(
-            person.name
-        )
     )
     external_points = float(
         context.point_offsets_by_person.get(
@@ -318,15 +247,13 @@ def score_candidate(
 
     selected_departments = {
         normalise_text(value)
-        for value
-        in context.selected_departments
+        for value in context.selected_departments
     }
 
     if (
         department
         and department != "UNSPECIFIED"
-        and department
-        in selected_departments
+        and department in selected_departments
     ):
         result.add(
             description=(
@@ -346,18 +273,15 @@ def score_candidate(
 
     overnight_duty = (
         context.is_overnight
-        if context.is_overnight
-        is not None
+        if context.is_overnight is not None
         else is_overnight_role(role)
     )
 
     if overnight_duty:
-        previous_overnight = (
-            last_overnight_before(
-                person=person,
-                duty_date=context.duty_date,
-                schedule=context.schedule,
-            )
+        previous_overnight = last_overnight_before(
+            person=person,
+            duty_date=context.duty_date,
+            schedule=context.schedule,
         )
 
         if previous_overnight is None:
@@ -374,10 +298,16 @@ def score_candidate(
                 - previous_overnight.duty_date
             ).days
 
-            if days_since_previous <= 1:
+            minimum_gap = (
+                context.overnight_min_break_days
+                + 1
+            )
+
+            if days_since_previous < minimum_gap:
                 result.block(
-                    "No day break since previous "
-                    "overnight duty"
+                    "Day break between overnight duties not met: "
+                    f"requires {context.overnight_min_break_days} "
+                    "full day(s)"
                 )
             else:
                 spacing_bonus = min(
@@ -394,8 +324,7 @@ def score_candidate(
 
         weekly_overnights = sum(
             1
-            for assignment
-            in assignments_in_week(
+            for assignment in assignments_in_week(
                 person=person,
                 duty_date=context.duty_date,
                 schedule=context.schedule,
@@ -426,9 +355,19 @@ def score_candidate(
             - context.duty_date
         ).days
 
-        if 0 < days_until_leaving <= 90:
+        reduction_window = max(
+            0,
+            context.leaving_reduction_days,
+        )
+
+        if (
+            reduction_window > 0
+            and 0 < days_until_leaving <= reduction_window
+        ):
             departure_penalty = (
-                91 - days_until_leaving
+                reduction_window
+                + 1
+                - days_until_leaving
             ) / 5
 
             result.add(

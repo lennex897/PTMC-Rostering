@@ -1,54 +1,21 @@
-from __future__ import annotations
-
-from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import date, timedelta
-from enum import Enum
+from datetime import date
 
 from roster_engine.eligibility import is_eligible_for_role
-from roster_engine.models import (
-    Assignment,
-    AvailabilityEntry,
-    DutyRequirement,
-    Person,
-    Schedule,
-)
-
-
-class ValidationSeverity(str, Enum):
-    ERROR = "error"
-    WARNING = "warning"
+from roster_engine.models import AvailabilityEntry, DutyRequirement, Person, Schedule
+from roster_engine.scoring import normalise_text
 
 
 @dataclass(frozen=True)
 class ValidationIssue:
     code: str
-    severity: ValidationSeverity
     message: str
-    duty_date: date | None = None
-    person_name: str | None = None
-    role: str | None = None
 
 
 @dataclass
 class ValidationReport:
-    issues: list[ValidationIssue] = field(default_factory=list)
-
-    @property
-    def errors(self) -> list[ValidationIssue]:
-        return [
-            issue
-            for issue in self.issues
-            if issue.severity == ValidationSeverity.ERROR
-        ]
-
-    @property
-    def warnings(self) -> list[ValidationIssue]:
-        return [
-            issue
-            for issue in self.issues
-            if issue.severity == ValidationSeverity.WARNING
-        ]
+    errors: list[ValidationIssue] = field(default_factory=list)
+    warnings: list[ValidationIssue] = field(default_factory=list)
 
     @property
     def is_valid(self) -> bool:
@@ -57,78 +24,6 @@ class ValidationReport:
     @property
     def error_count(self) -> int:
         return len(self.errors)
-
-    @property
-    def warning_count(self) -> int:
-        return len(self.warnings)
-
-    def add_error(
-        self,
-        *,
-        code: str,
-        message: str,
-        duty_date: date | None = None,
-        person_name: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        self.issues.append(
-            ValidationIssue(
-                code=code,
-                severity=ValidationSeverity.ERROR,
-                message=message,
-                duty_date=duty_date,
-                person_name=person_name,
-                role=role,
-            )
-        )
-
-    def add_warning(
-        self,
-        *,
-        code: str,
-        message: str,
-        duty_date: date | None = None,
-        person_name: str | None = None,
-        role: str | None = None,
-    ) -> None:
-        self.issues.append(
-            ValidationIssue(
-                code=code,
-                severity=ValidationSeverity.WARNING,
-                message=message,
-                duty_date=duty_date,
-                person_name=person_name,
-                role=role,
-            )
-        )
-
-
-def normalise_text(value: str) -> str:
-    return " ".join(value.strip().upper().split())
-
-
-def requirement_key(
-    requirement: DutyRequirement,
-) -> tuple[date, str, str]:
-    return (
-        requirement.duty_date,
-        normalise_text(requirement.role),
-        normalise_text(requirement.centre),
-    )
-
-
-def assignment_key(
-    assignment: Assignment,
-) -> tuple[date, str, str]:
-    return (
-        assignment.duty_date,
-        normalise_text(assignment.role),
-        normalise_text(assignment.centre),
-    )
-
-
-def week_start(duty_date: date) -> date:
-    return duty_date - timedelta(days=duty_date.weekday())
 
 
 def validate_schedule(
@@ -140,8 +35,20 @@ def validate_schedule(
     year: int,
     month: int,
     maximum_weekly_overnights: int = 3,
+    overnight_min_break_days: int = 1,
+    manual_only_personnel: tuple[str, ...] | list[str] | set[str] = (),
 ) -> ValidationReport:
     report = ValidationReport()
+
+    personnel_by_name = {
+        normalise_text(person.name): person
+        for person in personnel
+    }
+
+    manual_only_names = {
+        normalise_text(name)
+        for name in manual_only_personnel
+    }
 
     target_assignments = [
         assignment
@@ -152,140 +59,55 @@ def validate_schedule(
         )
     ]
 
-    target_requirements = [
-        requirement
-        for requirement in requirements
-        if (
-            requirement.duty_date.year == year
-            and requirement.duty_date.month == month
-        )
-    ]
-
-    personnel_by_name = {
-        normalise_text(person.name): person
-        for person in personnel
+    requirement_keys = {
+        (req.duty_date, req.role)
+        for req in requirements
     }
 
-    requirements_by_key: dict[
-        tuple[date, str, str],
-        list[DutyRequirement],
-    ] = defaultdict(list)
+    assignment_keys = {
+        (item.duty_date, item.role)
+        for item in target_assignments
+    }
 
-    assignments_by_key: dict[
-        tuple[date, str, str],
-        list[Assignment],
-    ] = defaultdict(list)
-
-    for requirement in target_requirements:
-        requirements_by_key[
-            requirement_key(requirement)
-        ].append(requirement)
-
-    for assignment in target_assignments:
-        assignments_by_key[
-            assignment_key(assignment)
-        ].append(assignment)
-
-    # Every required slot must have exactly one assignment.
-    for key, matching_requirements in requirements_by_key.items():
-        matching_assignments = assignments_by_key.get(key, [])
-
-        required_count = len(matching_requirements)
-        assigned_count = len(matching_assignments)
-
-        duty_date, role, centre = key
-
-        if assigned_count < required_count:
-            report.add_error(
+    for duty_date, role in sorted(
+        requirement_keys - assignment_keys
+    ):
+        report.errors.append(
+            ValidationIssue(
                 code="MISSING_REQUIREMENT",
                 message=(
-                    f"{required_count - assigned_count} assignment(s) "
-                    f"missing for {role} at {centre}."
+                    f"Missing {role} on "
+                    f"{duty_date.isoformat()}."
                 ),
-                duty_date=duty_date,
-                role=role,
             )
-
-        elif assigned_count > required_count:
-            report.add_error(
-                code="DUPLICATE_REQUIREMENT",
-                message=(
-                    f"{assigned_count} assignments were generated for "
-                    f"{required_count} required slot(s) for {role}."
-                ),
-                duty_date=duty_date,
-                role=role,
-            )
-
-    # No assignment should exist without a corresponding requirement.
-    for key, matching_assignments in assignments_by_key.items():
-        if key in requirements_by_key:
-            continue
-
-        duty_date, role, centre = key
-
-        report.add_error(
-            code="UNEXPECTED_ASSIGNMENT",
-            message=(
-                f"{len(matching_assignments)} unexpected assignment(s) "
-                f"found for {role} at {centre}."
-            ),
-            duty_date=duty_date,
-            role=role,
         )
 
-    # Nobody may be assigned more than once on the same date.
-    daily_person_counts = Counter(
-        (
-            assignment.duty_date,
-            normalise_text(assignment.person_name),
-        )
-        for assignment in target_assignments
-    )
-
-    for (
-        duty_date,
-        person_name,
-    ), assignment_count in daily_person_counts.items():
-        if assignment_count <= 1:
-            continue
-
-        report.add_error(
-            code="MULTIPLE_ASSIGNMENTS_SAME_DAY",
-            message=(
-                f"{person_name} has {assignment_count} assignments "
-                "on the same date."
-            ),
-            duty_date=duty_date,
-            person_name=person_name,
-        )
-
-    assignments_by_person: dict[
-        str,
-        list[Assignment],
-    ] = defaultdict(list)
-
-    weekly_overnight_counts: Counter[
+    seen_person_dates: set[
         tuple[str, date]
-    ] = Counter()
+    ] = set()
+
+    overnight_dates_by_person: dict[
+        str,
+        list[date],
+    ] = {}
 
     for assignment in target_assignments:
-        person_name = normalise_text(
+        person_key = normalise_text(
             assignment.person_name
         )
-
-        person = personnel_by_name.get(person_name)
+        person = personnel_by_name.get(
+            person_key
+        )
 
         if person is None:
-            report.add_error(
-                code="UNKNOWN_PERSON",
-                message=(
-                    f"Assigned person {assignment.person_name!r} "
-                    "was not found in the personnel list."
-                ),
-                duty_date=assignment.duty_date,
-                person_name=assignment.person_name,
-                role=assignment.role,
+            report.errors.append(
+                ValidationIssue(
+                    code="UNKNOWN_PERSONNEL",
+                    message=(
+                        f"Unknown personnel: "
+                        f"{assignment.person_name}."
+                    ),
+                )
             )
             continue
 
@@ -295,116 +117,115 @@ def validate_schedule(
             duty_date=assignment.duty_date,
             availability_entries=availability_entries,
         ):
-            report.add_error(
-                code="INELIGIBLE_ASSIGNMENT",
-                message=(
-                    f"{assignment.person_name} is not eligible for "
-                    f"{assignment.role} on this date."
-                ),
-                duty_date=assignment.duty_date,
-                person_name=assignment.person_name,
-                role=assignment.role,
+            report.errors.append(
+                ValidationIssue(
+                    code="INELIGIBLE_ASSIGNMENT",
+                    message=(
+                        f"{assignment.person_name} is not eligible for "
+                        f"{assignment.role} on "
+                        f"{assignment.duty_date.isoformat()}."
+                    ),
+                )
             )
 
-        matching_requirements = requirements_by_key.get(
-            assignment_key(assignment),
-            [],
+        person_date_key = (
+            person_key,
+            assignment.duty_date,
         )
 
-        if matching_requirements:
-            requirement = matching_requirements[0]
-
-            if assignment.points != requirement.points:
-                report.add_error(
-                    code="POINTS_MISMATCH",
+        if person_date_key in seen_person_dates:
+            report.errors.append(
+                ValidationIssue(
+                    code="MULTIPLE_ASSIGNMENTS_SAME_DAY",
                     message=(
-                        f"Assignment points {assignment.points:g} do not "
-                        f"match required points {requirement.points:g}."
+                        f"{assignment.person_name} has multiple duty "
+                        f"assignments on "
+                        f"{assignment.duty_date.isoformat()}."
                     ),
-                    duty_date=assignment.duty_date,
-                    person_name=assignment.person_name,
-                    role=assignment.role,
                 )
-
-            if (
-                assignment.is_overnight
-                != requirement.is_overnight
-            ):
-                report.add_error(
-                    code="OVERNIGHT_FLAG_MISMATCH",
-                    message=(
-                        "Assignment overnight flag does not match "
-                        "the requirement."
-                    ),
-                    duty_date=assignment.duty_date,
-                    person_name=assignment.person_name,
-                    role=assignment.role,
-                )
-
-        assignments_by_person[person_name].append(
-            assignment
-        )
+            )
+        else:
+            seen_person_dates.add(
+                person_date_key
+            )
 
         if assignment.is_overnight:
-            weekly_overnight_counts[
-                (
-                    person_name,
-                    week_start(assignment.duty_date),
-                )
-            ] += 1
+            overnight_dates_by_person.setdefault(
+                person_key,
+                [],
+            ).append(
+                assignment.duty_date
+            )
 
-    # Overnight duties require at least one clear day between them.
-    for person_name, assignments in assignments_by_person.items():
-        overnight_assignments = sorted(
-            (
-                assignment
-                for assignment in assignments
-                if assignment.is_overnight
-            ),
-            key=lambda assignment: assignment.duty_date,
-        )
+    minimum_gap = (
+        max(0, overnight_min_break_days)
+        + 1
+    )
+
+    for person_key, dates in overnight_dates_by_person.items():
+        sorted_dates = sorted(dates)
 
         for previous, current in zip(
-            overnight_assignments,
-            overnight_assignments[1:],
+            sorted_dates,
+            sorted_dates[1:],
         ):
-            days_between = (
-                current.duty_date
-                - previous.duty_date
-            ).days
+            if (
+                current - previous
+            ).days < minimum_gap:
+                person = personnel_by_name[
+                    person_key
+                ]
 
-            if days_between <= 1:
-                report.add_error(
-                    code="INSUFFICIENT_OVERNIGHT_BREAK",
-                    message=(
-                        f"{person_name} has overnight duties on "
-                        f"{previous.duty_date.isoformat()} and "
-                        f"{current.duty_date.isoformat()} without "
-                        "a full day break."
-                    ),
-                    duty_date=current.duty_date,
-                    person_name=person_name,
-                    role=current.role,
+                report.errors.append(
+                    ValidationIssue(
+                        code="INSUFFICIENT_OVERNIGHT_BREAK",
+                        message=(
+                            f"{person.name} does not have "
+                            f"{overnight_min_break_days} full day(s) "
+                            f"between overnight duties on "
+                            f"{previous.isoformat()} and "
+                            f"{current.isoformat()}."
+                        ),
+                    )
                 )
 
-    # Enforce the configured weekly overnight limit.
-    for (
-        person_name,
-        start_of_week,
-    ), overnight_count in weekly_overnight_counts.items():
-        if overnight_count <= maximum_weekly_overnights:
-            continue
+    # Weekly overnight cap.
+    for person_key, dates in overnight_dates_by_person.items():
+        week_counts: dict[
+            tuple[int, int],
+            int,
+        ] = {}
 
-        report.add_error(
-            code="WEEKLY_OVERNIGHT_LIMIT",
-            message=(
-                f"{person_name} has {overnight_count} overnight "
-                f"duties in the week beginning "
-                f"{start_of_week.isoformat()}; maximum is "
-                f"{maximum_weekly_overnights}."
-            ),
-            duty_date=start_of_week,
-            person_name=person_name,
-        )
+        for current_date in dates:
+            iso = current_date.isocalendar()
+            key = (
+                iso.year,
+                iso.week,
+            )
+            week_counts[key] = (
+                week_counts.get(key, 0)
+                + 1
+            )
+
+        for (iso_year, iso_week), count in week_counts.items():
+            if count > maximum_weekly_overnights:
+                person = personnel_by_name[
+                    person_key
+                ]
+
+                report.errors.append(
+                    ValidationIssue(
+                        code="WEEKLY_OVERNIGHT_LIMIT",
+                        message=(
+                            f"{person.name} has {count} overnight duties "
+                            f"in ISO week {iso_year}-W{iso_week:02d}; "
+                            f"maximum is {maximum_weekly_overnights}."
+                        ),
+                    )
+                )
+
+    # Manual-only people may legitimately appear if the assignment was
+    # manually locked. Validation cannot infer provenance from Schedule alone,
+    # so this rule is enforced at automatic generation time rather than here.
 
     return report

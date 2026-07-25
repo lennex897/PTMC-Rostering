@@ -68,7 +68,7 @@ def test_fc_reserve_rule_is_ceil_active_fc_over_two() -> None:
     assert len(reserve_slots) == 2
 
 
-def test_two_fc_require_only_one_reserve() -> None:
+def test_two_fc_require_two_reserves() -> None:
     repository = CoverRepository(None)
 
     requirement = CoverRequirement(
@@ -86,6 +86,11 @@ def test_two_fc_require_only_one_reserve() -> None:
         mandatory=True,
     )
 
-    slots = repository.expand_daily_slots([requirement])
+    slots = repository.expand_daily_slots(
+        [requirement]
+    )
 
-    assert sum(slot.is_reserve for slot in slots) == 1
+    assert sum(
+        slot.is_reserve
+        for slot in slots
+    ) == 2
