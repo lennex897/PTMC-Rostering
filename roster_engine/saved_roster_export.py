@@ -23,6 +23,15 @@ def saved_roster_to_schedule(
     export_assignments: list[Assignment] = []
 
     for item in assignments:
+        # FC SWAP is an audit/points record for a legitimate FC handover.
+        # It is not a separate rostered commitment and must not be written
+        # into the Excel person/date cell on top of the actual FC cover.
+        if (
+            item.assignment_kind != "DUTY"
+            and (item.cover_type or "").strip().upper() == "FC SWAP"
+        ):
+            continue
+
         if item.assignment_kind == "DUTY":
             role = item.role_name or "DUTY"
         else:
