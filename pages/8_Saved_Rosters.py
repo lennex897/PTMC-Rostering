@@ -282,8 +282,21 @@ def assignment_conflicts(
 
     conflicts: list[str] = []
 
+    if normalise(
+        target.cover_type or ""
+    ) == "FC SWAP":
+        return conflicts
+
     for other in assignments:
         if other.id == target.id:
+            continue
+
+        # FC SWAP rows are audit/points records for a legitimate FC handover.
+        # They are not a separate staffing commitment and must not create
+        # same-day assignment conflicts.
+        if normalise(
+            other.cover_type or ""
+        ) == "FC SWAP":
             continue
 
         if (
@@ -484,6 +497,15 @@ def validate_saved_roster(
     ] = defaultdict(list)
 
     for item in assignments:
+        # FC SWAP represents points/audit history for an FC handover.
+        # It is intentionally allowed on the same date as the outgoing or
+        # incoming person's actual FC cover and therefore is not a separate
+        # staffing commitment for conflict validation.
+        if normalise(
+            item.cover_type or ""
+        ) == "FC SWAP":
+            continue
+
         by_person_date[
             (
                 normalise(item.person_name),
@@ -593,6 +615,9 @@ def validate_saved_roster(
                 and normalise(
                     item.person_name
                 ) == person_key
+                and normalise(
+                    item.cover_type or ""
+                ) != "FC SWAP"
             )
         ]
 
