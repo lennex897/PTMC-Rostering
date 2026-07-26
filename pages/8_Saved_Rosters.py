@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import streamlit as st
 
@@ -17,6 +19,10 @@ from roster_engine.generated_roster_repository import (
     GeneratedRosterRepository,
     StoredGeneratedAssignment,
 )
+from roster_engine.dm_shadow_repository import (
+    DMShadowRepository,
+    SavedDMShadow,
+)
 from roster_engine.models import (
     Assignment,
     DutyRequirement,
@@ -28,7 +34,14 @@ from roster_engine.personnel_repository import (
 from roster_engine.roster_rules_repository import (
     RosterRulesRepository,
 )
+from roster_engine.requirements import (
+    overnight_points_for_date,
+)
 from roster_engine.validator import validate_schedule
+from roster_engine.exporter import export_schedule
+from roster_engine.saved_roster_export import (
+    saved_roster_to_schedule,
+)
 
 
 st.set_page_config(
@@ -36,6 +49,17 @@ st.set_page_config(
     page_icon="📋",
     layout="wide",
 )
+
+APP_ROOT = Path(
+    __file__
+).resolve().parents[1]
+
+ROSTER_TEMPLATE_PATH = (
+    APP_ROOT
+    / "reference"
+    / "Scheduling Roster 2026.xlsx"
+)
+
 
 st.title("Saved Rosters")
 st.caption(
@@ -104,6 +128,17 @@ def load_assignments(
 
 
 @st.cache_data(ttl=15)
+def load_dm_shadows(
+    roster_month_id: str,
+):
+    return DMShadowRepository(
+        get_supabase()
+    ).list_month_shadows(
+        roster_month_id
+    )
+
+
+@st.cache_data(ttl=15)
 def load_personnel():
     return load_personnel_records(
         include_inactive=False
@@ -133,6 +168,16 @@ def load_rules():
 def clear_saved_roster_cache() -> None:
     load_generations.clear()
     load_assignments.clear()
+    load_dm_shadows.clear()
+
+    st.session_state.pop(
+        "saved_roster_excel_bytes",
+        None,
+    )
+    st.session_state.pop(
+        "saved_roster_excel_name",
+        None,
+    )
 
 
 def normalise(value: str) -> str:
@@ -187,11 +232,49 @@ def person_available_for_cover(
     )
 
 
+def person_available_for_dm_shadow(
+    person,
+    *,
+    shadow_date: date,
+    availability_entries,
+) -> bool:
+    if not person.is_active:
+        return False
+
+    if normalise(
+        person.ampt_status
+    ) != "PASS":
+        return False
+
+    if (
+        person.leaving_date is not None
+        and shadow_date >= person.leaving_date
+    ):
+        return False
+
+    person_name = normalise(
+        person.name
+    )
+
+    return not any(
+        normalise(
+            entry.person_name
+        ) == person_name
+        and entry.unavailable_date
+        == shadow_date
+        and normalise(
+            entry.reason
+        ) in BLOCKING_REASONS
+        for entry in availability_entries
+    )
+
+
 def assignment_conflicts(
     *,
     candidate_name: str,
     target: StoredGeneratedAssignment,
     assignments: list[StoredGeneratedAssignment],
+    dm_shadows: list[SavedDMShadow] | None = None,
 ) -> list[str]:
     candidate = normalise(
         candidate_name
@@ -234,6 +317,18 @@ def assignment_conflicts(
                 str(label)
             )
 
+    for shadow in dm_shadows or []:
+        if (
+            shadow.shadow_date
+            == target.assignment_date
+            and normalise(
+                shadow.personnel_name
+            ) == candidate
+        ):
+            conflicts.append(
+                "DM SHADOW"
+            )
+
     return conflicts
 
 
@@ -243,6 +338,7 @@ def eligible_replacements(
     personnel_records,
     availability_entries,
     assignments,
+    dm_shadows=None,
 ):
     candidates = []
 
@@ -285,6 +381,7 @@ def eligible_replacements(
             candidate_name=person.name,
             target=target,
             assignments=assignments,
+            dm_shadows=dm_shadows,
         )
 
         if conflicts:
@@ -298,6 +395,7 @@ def eligible_replacements(
 def validate_saved_roster(
     *,
     assignments,
+    dm_shadows,
     personnel_records,
     availability_entries,
     generation,
@@ -417,6 +515,131 @@ def validate_saved_roster(
                     )
                     break
 
+    personnel_by_name = {
+        normalise(
+            record.person.name
+        ): record.person
+        for record in personnel_records
+    }
+
+    overnight_dates_by_person: dict[
+        str,
+        list[date],
+    ] = defaultdict(list)
+
+    for item in assignments:
+        if item.is_overnight:
+            overnight_dates_by_person[
+                normalise(
+                    item.person_name
+                )
+            ].append(
+                item.assignment_date
+            )
+
+    for shadow in dm_shadows:
+        person_key = normalise(
+            shadow.personnel_name
+        )
+        person = personnel_by_name.get(
+            person_key
+        )
+
+        if person is None:
+            errors.append(
+                f"Unknown personnel for DM Shadow: "
+                f"{shadow.personnel_name}."
+            )
+            continue
+
+        if not person_available_for_dm_shadow(
+            person,
+            shadow_date=(
+                shadow.shadow_date
+            ),
+            availability_entries=(
+                availability_entries
+            ),
+        ):
+            errors.append(
+                f"{shadow.personnel_name} is not available/AMPT-valid "
+                f"for DM Shadow on "
+                f"{shadow.shadow_date:%d %b %Y}."
+            )
+
+        has_pt_dm = any(
+            item.assignment_date
+            == shadow.shadow_date
+            and normalise(
+                item.role_name
+                or ""
+            ) == "PT DM"
+            for item in assignments
+        )
+
+        if not has_pt_dm:
+            errors.append(
+                f"DM Shadow on "
+                f"{shadow.shadow_date:%d %b %Y} "
+                "has no PT DM duty to shadow."
+            )
+
+        same_day_assignments = [
+            item
+            for item in assignments
+            if (
+                item.assignment_date
+                == shadow.shadow_date
+                and normalise(
+                    item.person_name
+                ) == person_key
+            )
+        ]
+
+        if same_day_assignments:
+            errors.append(
+                f"{shadow.personnel_name} has another commitment on "
+                f"{shadow.shadow_date:%d %b %Y}."
+            )
+
+        overnight_dates_by_person[
+            person_key
+        ].append(
+            shadow.shadow_date
+        )
+
+    minimum_gap = (
+        max(
+            0,
+            rules.overnight_min_break_days,
+        )
+        + 1
+    )
+
+    for person_key, overnight_dates in (
+        overnight_dates_by_person.items()
+    ):
+        sorted_dates = sorted(
+            overnight_dates
+        )
+
+        for previous, current in zip(
+            sorted_dates,
+            sorted_dates[1:],
+        ):
+            if (
+                current - previous
+            ).days < minimum_gap:
+                person = personnel_by_name.get(
+                    person_key
+                )
+                errors.append(
+                    f"{person.name if person else person_key} does not have "
+                    f"{rules.overnight_min_break_days} full day(s) between "
+                    f"overnight commitments on "
+                    f"{previous:%d %b} and {current:%d %b}."
+                )
+
     if generation.unfilled_duty_count:
         errors.append(
             f"Generation still records "
@@ -527,6 +750,9 @@ generation = generation_by_id[
 assignments = load_assignments(
     generation.id
 )
+dm_shadows = load_dm_shadows(
+    roster_month_id
+)
 
 personnel_records = load_personnel()
 availability_entries = load_availability(
@@ -536,7 +762,7 @@ availability_entries = load_availability(
 rules = load_rules()
 
 
-m1, m2, m3, m4, m5 = st.columns(5)
+m1, m2, m3, m4, m5, m6 = st.columns(6)
 
 m1.metric(
     "Personnel",
@@ -557,6 +783,12 @@ m4.metric(
 m5.metric(
     "Unfilled covers",
     generation.unfilled_cover_count,
+)
+m6.metric(
+    "DM Shadows",
+    len(
+        dm_shadows
+    ),
 )
 
 
@@ -675,6 +907,11 @@ with edit_tab:
             list[StoredGeneratedAssignment],
         ] = defaultdict(list)
 
+        dm_shadows_by_person_date: dict[
+            tuple[str, date],
+            list[SavedDMShadow],
+        ] = defaultdict(list)
+
         for item in assignments:
             assignments_by_person_date[
                 (
@@ -684,6 +921,18 @@ with edit_tab:
                     item.assignment_date,
                 )
             ].append(item)
+
+        for shadow in dm_shadows:
+            dm_shadows_by_person_date[
+                (
+                    normalise(
+                        shadow.personnel_name
+                    ),
+                    shadow.shadow_date,
+                )
+            ].append(
+                shadow
+            )
 
         # Clean visual matrix: personnel down the left, dates across the top.
         matrix_rows = []
@@ -710,11 +959,7 @@ with edit_tab:
                     )
                 )
 
-                row[
-                    duty_date.strftime(
-                        "%d %b"
-                    )
-                ] = "\n".join(
+                values = [
                     assignment_display(
                         item
                     )
@@ -726,6 +971,25 @@ with edit_tab:
                             item.cover_type or "",
                         ),
                     )
+                ]
+
+                values.extend(
+                    "DM SHADOW"
+                    for _ in dm_shadows_by_person_date.get(
+                        (
+                            person_key,
+                            duty_date,
+                        ),
+                        [],
+                    )
+                )
+
+                row[
+                    duty_date.strftime(
+                        "%d %b"
+                    )
+                ] = "\n".join(
+                    values
                 )
 
             matrix_rows.append(row)
@@ -879,6 +1143,7 @@ with edit_tab:
                     availability_entries
                 ),
                 assignments=assignments,
+                dm_shadows=dm_shadows,
             )
 
             replacement_by_id = {
@@ -1015,11 +1280,268 @@ with edit_tab:
                         )
                         st.rerun()
 
-        st.caption(
-            "This editor currently moves existing saved duties/covers only. "
-            "DM Shadow will be added here next as an additional post-generation "
-            "plotting action without consuming the real DM slot."
+        st.divider()
+        st.markdown(
+            "#### DM Shadow"
         )
+        st.caption(
+            "DM Shadows are manually plotted after generation. They do not "
+            "consume the real PT DM staffing slot."
+        )
+
+        selected_record = (
+            person_record_by_name[
+                selected_person_key
+            ]
+        )
+
+        shadows_here = [
+            shadow
+            for shadow in dm_shadows
+            if (
+                normalise(
+                    shadow.personnel_name
+                ) == selected_person_key
+                and shadow.shadow_date
+                == selected_date
+            )
+        ]
+
+        pt_dm_on_date = next(
+            (
+                item
+                for item in assignments
+                if (
+                    item.assignment_date
+                    == selected_date
+                    and normalise(
+                        item.role_name
+                        or ""
+                    ) == "PT DM"
+                )
+            ),
+            None,
+        )
+
+        same_day_commitments = [
+            item
+            for item in assignments
+            if (
+                item.assignment_date
+                == selected_date
+                and normalise(
+                    item.person_name
+                ) == selected_person_key
+            )
+        ]
+
+        shadow_points = (
+            overnight_points_for_date(
+                selected_date,
+                rules=rules,
+            )
+        )
+
+        if shadows_here:
+            shadow = shadows_here[0]
+
+            st.success(
+                f"DM Shadow plotted for "
+                f"{selected_person_name} on "
+                f"{selected_date:%d %b %Y} "
+                f"({shadow.points:g} points)."
+            )
+
+            if shadow.remarks:
+                st.caption(
+                    shadow.remarks
+                )
+
+            if st.button(
+                "Remove DM Shadow",
+                use_container_width=True,
+                key=(
+                    "remove_dm_shadow_"
+                    + generation.id
+                    + "_"
+                    + shadow.id
+                ),
+            ):
+                try:
+                    DMShadowRepository(
+                        get_supabase()
+                    ).delete_dm_shadow(
+                        shadow.id
+                    )
+                except Exception as exc:
+                    st.error(
+                        f"Unable to remove DM Shadow: {exc}"
+                    )
+                else:
+                    clear_saved_roster_cache()
+                    st.success(
+                        "DM Shadow removed."
+                    )
+                    st.rerun()
+        else:
+            shadow_issues = []
+
+            if pt_dm_on_date is None:
+                shadow_issues.append(
+                    "There is no PT DM assignment on this date."
+                )
+
+            if not person_available_for_dm_shadow(
+                selected_record.person,
+                shadow_date=selected_date,
+                availability_entries=(
+                    availability_entries
+                ),
+            ):
+                shadow_issues.append(
+                    "Selected personnel is unavailable, inactive, "
+                    "past leaving date, or does not have AMPT PASS."
+                )
+
+            if same_day_commitments:
+                shadow_issues.append(
+                    "Selected personnel already has a saved duty/cover "
+                    "on this date."
+                )
+
+            person_overnight_dates = [
+                item.assignment_date
+                for item in assignments
+                if (
+                    item.is_overnight
+                    and normalise(
+                        item.person_name
+                    ) == selected_person_key
+                )
+            ]
+
+            person_overnight_dates.extend(
+                shadow.shadow_date
+                for shadow in dm_shadows
+                if normalise(
+                    shadow.personnel_name
+                ) == selected_person_key
+            )
+
+            minimum_gap = (
+                max(
+                    0,
+                    rules.overnight_min_break_days,
+                )
+                + 1
+            )
+
+            for existing_date in person_overnight_dates:
+                if abs(
+                    (
+                        selected_date
+                        - existing_date
+                    ).days
+                ) < minimum_gap:
+                    shadow_issues.append(
+                        "Overnight day-break rule would be violated."
+                    )
+                    break
+
+            iso_target = (
+                selected_date.isocalendar()
+            )
+
+            weekly_count = sum(
+                1
+                for existing_date
+                in person_overnight_dates
+                if (
+                    existing_date.isocalendar().year
+                    == iso_target.year
+                    and existing_date.isocalendar().week
+                    == iso_target.week
+                )
+            )
+
+            if (
+                weekly_count
+                >= rules.maximum_weekly_overnights
+            ):
+                shadow_issues.append(
+                    "Maximum weekly overnight commitments "
+                    "would be exceeded."
+                )
+
+            st.metric(
+                "Shadow points",
+                f"{shadow_points:g}",
+            )
+
+            shadow_remarks = st.text_input(
+                "Shadow remarks",
+                key=(
+                    "dm_shadow_remarks_"
+                    + generation.id
+                    + "_"
+                    + selected_person_key
+                    + "_"
+                    + selected_date.isoformat()
+                ),
+            )
+
+            if shadow_issues:
+                for issue in shadow_issues:
+                    st.warning(
+                        issue
+                    )
+
+            if st.button(
+                "Plot DM Shadow",
+                type="primary",
+                use_container_width=True,
+                disabled=bool(
+                    shadow_issues
+                ),
+                key=(
+                    "plot_dm_shadow_"
+                    + generation.id
+                    + "_"
+                    + selected_person_key
+                    + "_"
+                    + selected_date.isoformat()
+                ),
+            ):
+                try:
+                    DMShadowRepository(
+                        get_supabase()
+                    ).add_dm_shadow(
+                        roster_month_id=(
+                            roster_month_id
+                        ),
+                        personnel_name=(
+                            selected_record.person.name
+                        ),
+                        shadow_date=(
+                            selected_date
+                        ),
+                        points=(
+                            shadow_points
+                        ),
+                        remarks=(
+                            shadow_remarks
+                        ),
+                    )
+                except Exception as exc:
+                    st.error(
+                        f"Unable to plot DM Shadow: {exc}"
+                    )
+                else:
+                    clear_saved_roster_cache()
+                    st.success(
+                        "DM Shadow plotted."
+                    )
+                    st.rerun()
 
 
 duty_assignments = [
@@ -1050,6 +1572,18 @@ with duty_tab:
         }
         for item in duty_assignments
     ]
+
+    rows.extend(
+        {
+            "Date": shadow.shadow_date,
+            "Centre": shadow.centre,
+            "Role": "DM SHADOW",
+            "Personnel": shadow.personnel_name,
+            "Points": shadow.points,
+            "Locked": True,
+        }
+        for shadow in dm_shadows
+    )
 
     st.dataframe(
         rows,
@@ -1085,12 +1619,20 @@ with matrix_tab:
             item.person_name
             for item in assignments
         }
+        | {
+            shadow.personnel_name
+            for shadow in dm_shadows
+        }
     )
 
     all_dates = sorted(
         {
             item.assignment_date
             for item in assignments
+        }
+        | {
+            shadow.shadow_date
+            for shadow in dm_shadows
         }
     )
 
@@ -1118,6 +1660,17 @@ with matrix_tab:
                         else item.cover_type
                         or item.assignment_kind
                     )
+
+            values.extend(
+                "DM SHADOW"
+                for shadow in dm_shadows
+                if (
+                    shadow.personnel_name
+                    == person_name
+                    and shadow.shadow_date
+                    == current_date
+                )
+            )
 
             row[
                 current_date.strftime(
@@ -1159,6 +1712,27 @@ with workload_tab:
 
         row["Total points"] += item.points
 
+    for shadow in dm_shadows:
+        row = workload.setdefault(
+            shadow.personnel_name,
+            {
+                "Personnel": shadow.personnel_name,
+                "Duty points": 0.0,
+                "Cover points": 0.0,
+                "Total points": 0.0,
+                "Duties": 0,
+                "Covers": 0,
+            },
+        )
+
+        row["Duty points"] += (
+            shadow.points
+        )
+        row["Total points"] += (
+            shadow.points
+        )
+        row["Duties"] += 1
+
     workload_rows = sorted(
         workload.values(),
         key=lambda row: (
@@ -1183,6 +1757,7 @@ with validation_tab:
     validation_errors = (
         validate_saved_roster(
             assignments=assignments,
+            dm_shadows=dm_shadows,
             personnel_records=(
                 personnel_records
             ),
@@ -1209,6 +1784,116 @@ with validation_tab:
         st.success(
             "Roster passes post-generation validation."
         )
+
+    st.divider()
+    st.subheader(
+        "Excel export"
+    )
+
+    if validation_errors:
+        st.info(
+            "Excel export is disabled until the saved roster passes validation."
+        )
+    elif not ROSTER_TEMPLATE_PATH.exists():
+        st.error(
+            "Roster template was not found at "
+            f"{ROSTER_TEMPLATE_PATH}."
+        )
+    else:
+        export_schedule_model = (
+            saved_roster_to_schedule(
+                assignments=assignments,
+                dm_shadows=dm_shadows,
+            )
+        )
+
+        if st.button(
+            "Prepare Excel export",
+            use_container_width=True,
+            key=(
+                "prepare_saved_roster_excel_"
+                + generation.id
+            ),
+        ):
+            try:
+                with TemporaryDirectory() as temp_dir:
+                    output_path = (
+                        Path(temp_dir)
+                        / (
+                            f"{selected_month:%b-%Y}"
+                            f"-Roster-v{generation.version}.xlsx"
+                        )
+                    )
+
+                    export_schedule(
+                        template_path=(
+                            ROSTER_TEMPLATE_PATH
+                        ),
+                        output_path=(
+                            output_path
+                        ),
+                        schedule=(
+                            export_schedule_model
+                        ),
+                        year=(
+                            selected_month.year
+                        ),
+                        month=(
+                            selected_month.month
+                        ),
+                        personnel=[
+                            record.person
+                            for record
+                            in personnel_records
+                        ],
+                    )
+
+                    st.session_state[
+                        "saved_roster_excel_bytes"
+                    ] = output_path.read_bytes()
+
+                    st.session_state[
+                        "saved_roster_excel_name"
+                    ] = output_path.name
+            except Exception as exc:
+                st.error(
+                    f"Unable to create Excel export: {exc}"
+                )
+            else:
+                st.success(
+                    "Excel export prepared."
+                )
+
+        excel_bytes = (
+            st.session_state.get(
+                "saved_roster_excel_bytes"
+            )
+        )
+
+        excel_name = (
+            st.session_state.get(
+                "saved_roster_excel_name"
+            )
+        )
+
+        if (
+            excel_bytes
+            and excel_name
+        ):
+            st.download_button(
+                "Download Excel roster",
+                data=excel_bytes,
+                file_name=excel_name,
+                mime=(
+                    "application/vnd.openxmlformats-"
+                    "officedocument.spreadsheetml.sheet"
+                ),
+                use_container_width=True,
+                key=(
+                    "download_saved_roster_excel_"
+                    + generation.id
+                ),
+            )
 
     if generation.status == "draft":
         if st.button(
