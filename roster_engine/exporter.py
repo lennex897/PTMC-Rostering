@@ -63,12 +63,18 @@ NON_PERSONNEL_LABELS = {
 }
 
 
-# Fixed personnel blocks in the current Scheduling Roster workbook template.
-# These are intentionally bounded so synchronisation never inserts/deletes rows
-# and therefore cannot shift the summary/formula sections below them.
-PERSONNEL_BLOCKS = {
-    "PT": range(5, 42),   # rows 5-41 inclusive
-    "RH": range(52, 72),  # rows 52-71 inclusive
+# Base personnel blocks in the Scheduling Roster workbook template.
+# These are expanded at export time if current Supabase manpower exceeds the
+# original workbook capacity.
+BASE_PERSONNEL_BLOCKS = {
+    "PT": (5, 41),   # 37 rows
+    "RH": (52, 71),  # 20 rows
+}
+
+BASE_PERSONNEL_CAPACITY = {
+    centre: end_row - start_row + 1
+    for centre, (start_row, end_row)
+    in BASE_PERSONNEL_BLOCKS.items()
 }
 
 def canonical_person_name(value: object) -> str:
@@ -327,6 +333,112 @@ def _clear_personnel_schedule_cells(
         ).value = None
 
 
+def _copy_row_format(
+    worksheet: Worksheet,
+    *,
+    source_row: int,
+    target_row: int,
+) -> None:
+    """Copy row height and cell formatting into a newly inserted personnel row."""
+    source_height = worksheet.row_dimensions[source_row].height
+    if source_height is not None:
+        worksheet.row_dimensions[target_row].height = source_height
+
+    for column_number in range(1, worksheet.max_column + 1):
+        source_cell = worksheet.cell(
+            row=source_row,
+            column=column_number,
+        )
+        target_cell = worksheet.cell(
+            row=target_row,
+            column=column_number,
+        )
+
+        if source_cell.has_style:
+            target_cell._style = copy(source_cell._style)
+
+        target_cell.number_format = source_cell.number_format
+        target_cell.alignment = copy(source_cell.alignment)
+        target_cell.protection = copy(source_cell.protection)
+        target_cell.font = copy(source_cell.font)
+        target_cell.fill = copy(source_cell.fill)
+        target_cell.border = copy(source_cell.border)
+
+        # A new personnel row must start empty. Formula/summary rows are not
+        # used as the source template for expansion.
+        target_cell.value = None
+
+
+def _expand_personnel_blocks(
+    worksheet: Worksheet,
+    *,
+    pt_count: int,
+    rh_count: int,
+) -> dict[str, range]:
+    """
+    Expand the PT/RH personnel areas to fit current Supabase manpower.
+
+    PT rows are inserted immediately after the original PT block. This shifts
+    the summary area and RH block down naturally. RH rows are then inserted
+    immediately after the shifted RH block.
+
+    Returns the final row ranges to use for personnel synchronisation.
+    """
+    pt_start, pt_end = BASE_PERSONNEL_BLOCKS["PT"]
+    rh_start, rh_end = BASE_PERSONNEL_BLOCKS["RH"]
+
+    pt_extra = max(
+        0,
+        pt_count - BASE_PERSONNEL_CAPACITY["PT"],
+    )
+    rh_extra = max(
+        0,
+        rh_count - BASE_PERSONNEL_CAPACITY["RH"],
+    )
+
+    if pt_extra:
+        insert_at = pt_end + 1
+        worksheet.insert_rows(
+            insert_at,
+            amount=pt_extra,
+        )
+
+        for offset in range(pt_extra):
+            _copy_row_format(
+                worksheet,
+                source_row=pt_end,
+                target_row=insert_at + offset,
+            )
+
+    shifted_rh_start = rh_start + pt_extra
+    shifted_rh_end = rh_end + pt_extra
+
+    if rh_extra:
+        insert_at = shifted_rh_end + 1
+        worksheet.insert_rows(
+            insert_at,
+            amount=rh_extra,
+        )
+
+        for offset in range(rh_extra):
+            _copy_row_format(
+                worksheet,
+                source_row=shifted_rh_end,
+                target_row=insert_at + offset,
+            )
+
+    return {
+        "PT": range(
+            pt_start,
+            pt_end + pt_extra + 1,
+        ),
+        "RH": range(
+            shifted_rh_start,
+            shifted_rh_end + rh_extra + 1,
+        ),
+    }
+
+
 def sync_personnel_rows(
     worksheet: Worksheet,
     *,
@@ -336,16 +448,11 @@ def sync_personnel_rows(
     date_columns: dict[date, int],
 ) -> dict[str, int]:
     """
-    Synchronise PT/RH personnel names from Supabase into the fixed Excel blocks.
+    Synchronise PT/RH personnel names from Supabase into the Excel blocks.
 
-    Existing exact/unique legacy matches retain their rows so any legitimate
-    template availability entries remain attached to the same person.
-
-    Rows belonging to personnel no longer in the target month's Supabase pool
-    are reused for unmatched/new personnel, and their date-grid cells are
-    cleared before reuse.
-
-    No rows are inserted or deleted.
+    Existing exact/unique legacy matches retain their rows where possible.
+    If current manpower exceeds the original template capacity, additional
+    formatted personnel rows are inserted automatically.
     """
     target_people = [
         person
@@ -375,15 +482,15 @@ def sync_personnel_rows(
 
     final_rows: dict[str, int] = {}
 
-    for centre, row_range in PERSONNEL_BLOCKS.items():
+    personnel_blocks = _expand_personnel_blocks(
+        worksheet,
+        pt_count=len(by_centre["PT"]),
+        rh_count=len(by_centre["RH"]),
+    )
+
+    for centre, row_range in personnel_blocks.items():
         people = by_centre[centre]
         available_rows = list(row_range)
-
-        if len(people) > len(available_rows):
-            raise ValueError(
-                f"{centre} personnel count ({len(people)}) exceeds "
-                f"the Excel template capacity ({len(available_rows)})."
-            )
 
         existing_by_row = {
             row_number: canonical_person_name(
