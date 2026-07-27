@@ -28,6 +28,21 @@ st.caption(
     "used by the roster generator."
 )
 
+def legacy_category_for_type(
+    cover_type: str,
+) -> str:
+    value = " ".join(
+        cover_type.strip().upper().split()
+    )
+
+    if value in {
+        "FC",
+        "GP",
+        "GX",
+    }:
+        return value
+
+    return "NON_FC"
 
 def month_start(value: date) -> date:
     return value.replace(day=1)
@@ -470,8 +485,10 @@ with add_tab:
                     ),
                     # Legacy compatibility only; cover_type is now
                     # the application source of truth.
-                    "cover_category": (
-                        cover_type
+                   "cover_category": (
+                        legacy_category_for_type(
+                            cover_type
+                        )
                     ),
                     "cover_type": (
                         cover_type
@@ -1001,8 +1018,10 @@ with types_tab:
             )
 
             payload = {
-                # Legacy DB column mirrors cover_type during Step 23A.
-                "category": normalised_type,
+                # Compatibility with the legacy Supabase category constraint.
+                "category": legacy_category_for_type(
+                    normalised_type
+                ),
                 "cover_type": normalised_type,
                 "points": float(
                     new_points
@@ -1228,7 +1247,9 @@ with types_tab:
                 )
 
                 payload = {
-                    "category": normalised_type,
+                    "category": legacy_category_for_type(
+                        normalised_type
+                    ),
                     "cover_type": normalised_type,
                     "points": float(
                         edit_points
