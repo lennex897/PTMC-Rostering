@@ -13,9 +13,9 @@ from roster_engine.manual_planning_repository import ManualPlanningRepository
 from roster_engine.fc_manual_continuity import (
     availability_conflict_dates,
     build_fc_segment_payloads,
-    capacity_conflict_dates,
     group_fc_segments,
     is_active_fc_requirement,
+    segment_overlap_dates,
     uncovered_fc_dates,
 )
 from roster_engine.personnel_repository import load_personnel_records
