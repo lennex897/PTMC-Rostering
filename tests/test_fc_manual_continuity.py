@@ -5,6 +5,7 @@ from roster_engine.fc_manual_continuity import (
     availability_conflict_dates,
     build_fc_segment_payloads,
     group_fc_segments,
+    segment_overlap_dates,
     uncovered_fc_dates,
 )
 from roster_engine.manual_planning_repository import ManualAssignment
@@ -28,7 +29,11 @@ def requirement() -> CoverRequirement:
     )
 
 
-def manual(assignment_id: str, person: str, duty_date: date) -> ManualAssignment:
+def manual(
+    assignment_id: str,
+    person: str,
+    duty_date: date,
+) -> ManualAssignment:
     return ManualAssignment(
         id=assignment_id,
         roster_month_id="m1",
@@ -46,7 +51,7 @@ def manual(assignment_id: str, person: str, duty_date: date) -> ManualAssignment
     )
 
 
-def test_whole_fc_builds_one_row_per_day() -> None:
+def test_whole_fc_creates_daily_locked_rows() -> None:
     rows = build_fc_segment_payloads(
         roster_month_id="m1",
         requirement=requirement(),
@@ -61,7 +66,7 @@ def test_whole_fc_builds_one_row_per_day() -> None:
     assert rows[-1]["assignment_date"] == "2026-08-05"
 
 
-def test_handover_segments_group_separately() -> None:
+def test_segments_group_by_handover() -> None:
     assignments = [
         manual("a1", "MEDIC A", date(2026, 8, 1)),
         manual("a2", "MEDIC A", date(2026, 8, 2)),
@@ -76,26 +81,41 @@ def test_handover_segments_group_separately() -> None:
 
     assert len(segments) == 2
     assert segments[0].person_name == "MEDIC A"
-    assert segments[0].start_date == date(2026, 8, 1)
     assert segments[0].end_date == date(2026, 8, 2)
     assert segments[1].person_name == "MEDIC B"
+    assert segments[1].start_date == date(2026, 8, 3)
 
 
-def test_uncovered_dates_detect_gap() -> None:
+def test_overlap_is_detected() -> None:
+    assignments = [
+        manual("a1", "MEDIC A", date(2026, 8, 2)),
+    ]
+
+    assert segment_overlap_dates(
+        requirement=requirement(),
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 3),
+        assignments=assignments,
+    ) == [date(2026, 8, 2)]
+
+
+def test_uncovered_dates_are_reported() -> None:
     assignments = [
         manual("a1", "MEDIC A", date(2026, 8, 1)),
         manual("a2", "MEDIC A", date(2026, 8, 2)),
-        manual("b1", "MEDIC B", date(2026, 8, 4)),
-        manual("b2", "MEDIC B", date(2026, 8, 5)),
     ]
 
     assert uncovered_fc_dates(
         requirement=requirement(),
         assignments=assignments,
-    ) == [date(2026, 8, 3)]
+    ) == [
+        date(2026, 8, 3),
+        date(2026, 8, 4),
+        date(2026, 8, 5),
+    ]
 
 
-def test_any_availability_code_is_reported() -> None:
+def test_any_availability_code_conflicts() -> None:
     conflicts = availability_conflict_dates(
         person_name="MEDIC A",
         start_date=date(2026, 8, 1),

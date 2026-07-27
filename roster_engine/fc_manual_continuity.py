@@ -44,22 +44,6 @@ def inclusive_dates(start_date: date, end_date: date) -> list[date]:
     ]
 
 
-def validate_segment_bounds(
-    *,
-    requirement: CoverRequirement,
-    start_date: date,
-    end_date: date,
-) -> None:
-    if not is_active_fc_requirement(requirement):
-        raise ValueError("Selected requirement is not an active FC requirement.")
-
-    if end_date < start_date:
-        raise ValueError("FC segment end date cannot be before start date.")
-
-    if start_date < requirement.start_date or end_date > requirement.end_date:
-        raise ValueError("FC segment must remain within the cover requirement dates.")
-
-
 def availability_conflict_dates(
     *,
     person_name: str,
@@ -80,42 +64,6 @@ def availability_conflict_dates(
     })
 
 
-def existing_active_fc_count(
-    *,
-    requirement_id: str,
-    duty_date: date,
-    assignments: Iterable[ManualAssignment],
-) -> int:
-    return sum(
-        1
-        for assignment in assignments
-        if (
-            assignment.assignment_kind == "COVER"
-            and assignment.cover_requirement_id == requirement_id
-            and assignment.assignment_date == duty_date
-            and assignment.is_locked
-        )
-    )
-
-
-def capacity_conflict_dates(
-    *,
-    requirement: CoverRequirement,
-    start_date: date,
-    end_date: date,
-    assignments: Iterable[ManualAssignment],
-) -> list[date]:
-    return [
-        current_date
-        for current_date in inclusive_dates(start_date, end_date)
-        if existing_active_fc_count(
-            requirement_id=requirement.id,
-            duty_date=current_date,
-            assignments=assignments,
-        ) >= requirement.personnel_required
-    ]
-
-
 def build_fc_segment_payloads(
     *,
     roster_month_id: str,
@@ -126,14 +74,21 @@ def build_fc_segment_payloads(
     allow_override: bool,
     remarks: str | None = None,
 ) -> list[dict]:
-    validate_segment_bounds(
-        requirement=requirement,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    if not is_active_fc_requirement(requirement):
+        raise ValueError("Selected requirement is not an active FC requirement.")
+
+    if end_date < start_date:
+        raise ValueError("FC segment end date cannot be before start date.")
+
+    if (
+        start_date < requirement.start_date
+        or end_date > requirement.end_date
+    ):
+        raise ValueError(
+            "FC segment must remain within the FC requirement dates."
+        )
 
     clean_remarks = remarks.strip() if remarks and remarks.strip() else None
-    label = f"{requirement.requesting_unit} — {requirement.cover_type}"
 
     return [
         {
@@ -144,7 +99,10 @@ def build_fc_segment_payloads(
             "centre": None,
             "role_name": None,
             "cover_requirement_id": requirement.id,
-            "cover_label": label,
+            "cover_label": (
+                f"{requirement.requesting_unit} — "
+                f"{requirement.cover_type}"
+            ),
             "session": requirement.session,
             "is_locked": True,
             "allow_override": bool(allow_override),
@@ -170,8 +128,8 @@ def group_fc_segments(
             )
         ],
         key=lambda assignment: (
-            normalise(assignment.personnel_name),
             assignment.assignment_date,
+            normalise(assignment.personnel_name),
         ),
     )
 
@@ -209,17 +167,53 @@ def group_fc_segments(
     ]
 
 
+def occupied_fc_dates(
+    *,
+    requirement_id: str,
+    assignments: Iterable[ManualAssignment],
+) -> set[date]:
+    return {
+        assignment.assignment_date
+        for assignment in assignments
+        if (
+            assignment.assignment_kind == "COVER"
+            and assignment.cover_requirement_id == requirement_id
+            and assignment.is_locked
+        )
+    }
+
+
+def segment_overlap_dates(
+    *,
+    requirement: CoverRequirement,
+    start_date: date,
+    end_date: date,
+    assignments: Iterable[ManualAssignment],
+) -> list[date]:
+    occupied = occupied_fc_dates(
+        requirement_id=requirement.id,
+        assignments=assignments,
+    )
+
+    return [
+        current_date
+        for current_date in inclusive_dates(start_date, end_date)
+        if current_date in occupied
+    ]
+
+
 def uncovered_fc_dates(
     *,
     requirement: CoverRequirement,
     assignments: Iterable[ManualAssignment],
 ) -> list[date]:
+    occupied = occupied_fc_dates(
+        requirement_id=requirement.id,
+        assignments=assignments,
+    )
+
     return [
         current_date
         for current_date in requirement.dates()
-        if existing_active_fc_count(
-            requirement_id=requirement.id,
-            duty_date=current_date,
-            assignments=assignments,
-        ) < requirement.personnel_required
+        if current_date not in occupied
     ]

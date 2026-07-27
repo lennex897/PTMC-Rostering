@@ -381,11 +381,7 @@ with duty_tab:
 
 with cover_tab:
     st.subheader("Lock a cover assignment")
-    st.caption(
-        "Selections and conflict warnings update immediately. "
-        "FC continuity options appear only when an active FC requirement "
-        "is selected."
-    )
+    st.caption("Selections and conflict warnings update immediately.")
 
     if not cover_requirements:
         st.info("No cover requirements exist for this month.")
@@ -393,17 +389,13 @@ with cover_tab:
         st.warning("No active Cover Fit personnel are available.")
     else:
         cover_date = st.date_input(
-            "Cover date",
-            value=selected_month,
-            min_value=selected_month,
-            max_value=selected_month_end,
-            format="DD/MM/YYYY",
+            "Cover date", value=selected_month, min_value=selected_month,
+            max_value=selected_month_end, format="DD/MM/YYYY",
             key="manual_cover_date",
         )
 
         available_requirements = [
-            req
-            for req in cover_requirements
+            req for req in cover_requirements
             if req.includes_date(cover_date)
         ]
 
@@ -421,10 +413,7 @@ with cover_tab:
                 "after applying leaving dates."
             )
         else:
-            requirement_by_id = {
-                req.id: req
-                for req in available_requirements
-            }
+            requirement_by_id = {req.id: req for req in available_requirements}
 
             selected_requirement_id = st.selectbox(
                 "Cover requirement",
@@ -435,437 +424,355 @@ with cover_tab:
                     f"({SESSION_LABELS.get(requirement_by_id[req_id].session, requirement_by_id[req_id].session)})"
                 ),
             )
+            selected_requirement = requirement_by_id[selected_requirement_id]
 
-            selected_requirement = requirement_by_id[
-                selected_requirement_id
-            ]
-
-            selected_is_fc = is_active_fc_requirement(
-                selected_requirement
+            selected_is_active_fc = (
+                is_active_fc_requirement(
+                    selected_requirement
+                )
             )
 
-            if selected_is_fc:
-                assignment_mode = st.radio(
-                    "Assignment",
-                    [
-                        "Active FC",
-                        "FC reserve",
-                    ],
-                    horizontal=True,
-                    key=(
-                        "manual_fc_assignment_mode_"
-                        + selected_requirement_id
-                    ),
-                )
-            else:
-                assignment_mode = "Active cover"
+            assignment_options = (
+                ["FC reserve"]
+                if selected_is_active_fc
+                else ["Active cover"]
+            )
 
-            # ---------------------------------------------------------------
-            # ACTIVE FC: continuity UI appears only when FC is selected.
-            # ---------------------------------------------------------------
-            if (
-                selected_is_fc
-                and assignment_mode == "Active FC"
-            ):
+            assignment_mode = st.radio(
+                "Assignment",
+                assignment_options,
+                horizontal=True,
+            )
+
+            if selected_is_active_fc:
                 st.info(
-                    "FC continuity mode: the selected medic is assumed to "
-                    "cover continuously for the chosen period. Choose Whole FC "
-                    "or define a handover segment."
+                    "Active FC is planned in the FC continuity tab so a medic "
+                    "can be locked for the whole deployment or a defined "
+                    "handover segment."
+                )
+            cover_person = st.selectbox(
+                "Cover Fit personnel",
+                cover_fit_options,
+                key=f"manual_cover_person_{cover_date.isoformat()}",
+            )
+
+            availability_code = get_availability_code(
+                availability_rows, cover_person, cover_date
+            )
+            if availability_code:
+                st.warning(
+                    f"{cover_person} has availability code {availability_code} "
+                    f"on {cover_date:%d %b %Y}."
                 )
 
-                existing_segments = group_fc_segments(
-                    requirement_id=selected_requirement.id,
-                    assignments=manual_assignments,
+            allow_cover_override = st.checkbox(
+                "Allow manual override if validation finds a conflict",
+                value=False,
+                key="manual_cover_override",
+            )
+            cover_remarks = st.text_input("Remarks", key="manual_cover_remarks")
+
+            if st.button("Lock cover assignment", type="primary", use_container_width=True):
+                kind = "COVER" if assignment_mode == "Active cover" else "COVER_RESERVE"
+                label = (
+                    f"{selected_requirement.requesting_unit} — "
+                    f"{selected_requirement.cover_type}"
+                    if kind == "COVER" else "FC RESERVE"
                 )
+                payload = {
+                    "roster_month_id": roster_month_id,
+                    "personnel_name": cover_person,
+                    "assignment_date": cover_date.isoformat(),
+                    "assignment_kind": kind,
+                    "centre": None,
+                    "role_name": None,
+                    "cover_requirement_id": selected_requirement_id,
+                    "cover_label": label,
+                    "session": selected_requirement.session,
+                    "is_locked": True,
+                    "allow_override": allow_cover_override,
+                    "remarks": cover_remarks.strip() or None,
+                }
+                get_supabase().table("roster_manual_assignments").insert(payload).execute()
+                clear_manual_cache()
+                st.success("Cover assignment locked.")
+                st.rerun()
 
-                uncovered_dates = uncovered_fc_dates(
-                    requirement=selected_requirement,
-                    assignments=manual_assignments,
-                )
 
-                if existing_segments:
-                    st.markdown("#### Current FC continuity plan")
+with fc_tab:
+    st.subheader("FC continuity planner")
+    st.caption(
+        "An FC assignment is treated as a continuous deployment. "
+        "Whole FC is the default; use a custom segment for handovers."
+    )
 
-                    st.dataframe(
-                        [
-                            {
-                                "Personnel": segment.person_name,
-                                "From": segment.start_date,
-                                "Until": segment.end_date,
-                                "Days": segment.day_count,
-                                "Override": segment.allow_override,
-                                "Remarks": segment.remarks or "",
-                            }
-                            for segment in existing_segments
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "From": st.column_config.DateColumn(
-                                "From",
-                                format="DD MMM",
-                            ),
-                            "Until": st.column_config.DateColumn(
-                                "Until",
-                                format="DD MMM",
-                            ),
-                        },
-                    )
+    fc_requirements = [
+        requirement
+        for requirement in cover_requirements
+        if is_active_fc_requirement(requirement)
+    ]
 
-                    delete_segment_index = st.selectbox(
-                        "FC segment to remove",
-                        options=list(range(len(existing_segments))),
-                        format_func=lambda index: (
-                            f"{existing_segments[index].person_name}: "
-                            f"{existing_segments[index].start_date:%d %b} "
-                            f"→ {existing_segments[index].end_date:%d %b}"
-                        ),
-                        key=(
-                            "manual_fc_delete_segment_"
-                            + selected_requirement.id
-                        ),
-                    )
+    if not fc_requirements:
+        st.info("No active FC requirements exist for this month.")
+    elif not cover_fit_names:
+        st.warning("No active Cover Fit personnel are available.")
+    else:
+        fc_requirement_by_id = {
+            requirement.id: requirement
+            for requirement in fc_requirements
+        }
 
-                    if st.button(
-                        "Delete selected FC segment",
-                        use_container_width=True,
-                        key=(
-                            "manual_fc_delete_button_"
-                            + selected_requirement.id
-                        ),
-                    ):
-                        segment = existing_segments[
-                            delete_segment_index
-                        ]
+        fc_requirement_id = st.selectbox(
+            "FC requirement",
+            options=list(fc_requirement_by_id),
+            format_func=lambda requirement_id: (
+                f"{fc_requirement_by_id[requirement_id].requesting_unit} — "
+                f"{fc_requirement_by_id[requirement_id].cover_type} "
+                f"({fc_requirement_by_id[requirement_id].start_date:%d %b} "
+                f"→ {fc_requirement_by_id[requirement_id].end_date:%d %b})"
+            ),
+            key="fc_continuity_requirement",
+        )
 
-                        try:
-                            for assignment_id in segment.assignment_ids:
-                                (
-                                    get_supabase()
-                                    .table("roster_manual_assignments")
-                                    .delete()
-                                    .eq("id", assignment_id)
-                                    .execute()
-                                )
-                        except Exception as exc:
-                            st.error(
-                                f"Unable to delete FC segment: {exc}"
-                            )
-                        else:
-                            clear_manual_cache()
-                            st.success("FC segment deleted.")
-                            st.rerun()
+        fc_requirement = fc_requirement_by_id[fc_requirement_id]
 
-                if uncovered_dates:
-                    st.caption(
-                        f"{len(uncovered_dates)} FC day(s) remain manually "
-                        "uncovered. The generator may fill them using normal "
-                        "FC continuity."
-                    )
-                else:
-                    st.success(
-                        "The full FC requirement is manually covered."
-                    )
+        existing_fc_segments = group_fc_segments(
+            requirement_id=fc_requirement.id,
+            assignments=manual_assignments,
+        )
 
-                st.markdown("#### Add / define FC continuity")
+        uncovered_dates = uncovered_fc_dates(
+            requirement=fc_requirement,
+            assignments=manual_assignments,
+        )
 
-                duration_mode = st.radio(
-                    "FC duration",
-                    [
-                        "Whole FC",
-                        "Custom segment",
-                    ],
-                    horizontal=True,
-                    key=(
-                        "manual_fc_duration_mode_"
-                        + selected_requirement.id
-                    ),
-                )
+        if existing_fc_segments:
+            st.markdown("#### Current manual FC plan")
 
-                if duration_mode == "Whole FC":
-                    fc_start = selected_requirement.start_date
-                    fc_end = selected_requirement.end_date
-
-                    st.caption(
-                        f"{fc_start:%d %b %Y} → {fc_end:%d %b %Y}"
-                    )
-                else:
-                    d1, d2 = st.columns(2)
-
-                    with d1:
-                        fc_start = st.date_input(
-                            "Cover from",
-                            value=max(
-                                cover_date,
-                                selected_requirement.start_date,
-                            ),
-                            min_value=selected_requirement.start_date,
-                            max_value=selected_requirement.end_date,
-                            format="DD/MM/YYYY",
-                            key=(
-                                "manual_fc_start_"
-                                + selected_requirement.id
-                            ),
-                        )
-
-                    with d2:
-                        fc_end = st.date_input(
-                            "Cover until",
-                            value=selected_requirement.end_date,
-                            min_value=fc_start,
-                            max_value=selected_requirement.end_date,
-                            format="DD/MM/YYYY",
-                            key=(
-                                "manual_fc_end_"
-                                + selected_requirement.id
-                                + "_"
-                                + fc_start.isoformat()
-                            ),
-                        )
-
-                fc_person_options = [
-                    name
-                    for name in cover_fit_names
-                    if (
-                        person_by_name[name].person.leaving_date
-                        is None
-                        or person_by_name[name].person.leaving_date
-                        > fc_end
-                    )
-                ]
-
-                fc_person = st.selectbox(
-                    "FC medic",
-                    options=fc_person_options,
-                    key=(
-                        "manual_fc_person_"
-                        + selected_requirement.id
-                        + "_"
-                        + fc_start.isoformat()
-                        + "_"
-                        + fc_end.isoformat()
-                    ),
-                    disabled=not fc_person_options,
-                )
-
-                fc_conflicts = (
-                    availability_conflict_dates(
-                        person_name=fc_person,
-                        start_date=fc_start,
-                        end_date=fc_end,
-                        availability_entries=availability_rows,
-                    )
-                    if fc_person
-                    else []
-                )
-
-                overlap_dates = segment_overlap_dates(
-                    requirement=selected_requirement,
-                    start_date=fc_start,
-                    end_date=fc_end,
-                    assignments=manual_assignments,
-                )
-
-                if fc_conflicts:
-                    st.warning(
-                        f"{fc_person} has Availability plotted on "
-                        f"{len(fc_conflicts)} selected day(s): "
-                        + ", ".join(
-                            current_date.strftime("%d %b")
-                            for current_date in fc_conflicts
-                        )
-                    )
-
-                if overlap_dates:
-                    st.error(
-                        "This segment overlaps an existing locked FC segment "
-                        "on: "
-                        + ", ".join(
-                            current_date.strftime("%d %b")
-                            for current_date in overlap_dates
-                        )
-                    )
-
-                allow_fc_override = st.checkbox(
-                    "Allow manual override for Availability conflicts",
-                    value=False,
-                    key=(
-                        "manual_fc_override_"
-                        + selected_requirement.id
-                        + "_"
-                        + fc_start.isoformat()
-                        + "_"
-                        + fc_end.isoformat()
-                    ),
-                )
-
-                fc_remarks = st.text_input(
-                    "Remarks",
-                    placeholder="Optional handover / FC note",
-                    key=(
-                        "manual_fc_remarks_"
-                        + selected_requirement.id
-                    ),
-                )
-
-                if st.button(
-                    "Lock FC continuity",
-                    type="primary",
-                    use_container_width=True,
-                    key=(
-                        "manual_fc_lock_"
-                        + selected_requirement.id
-                        + "_"
-                        + fc_start.isoformat()
-                        + "_"
-                        + fc_end.isoformat()
-                    ),
-                    disabled=(
-                        not fc_person_options
-                        or bool(overlap_dates)
-                        or (
-                            bool(fc_conflicts)
-                            and not allow_fc_override
-                        )
-                    ),
-                ):
-                    payloads = build_fc_segment_payloads(
-                        roster_month_id=roster_month_id,
-                        requirement=selected_requirement,
-                        person_name=fc_person,
-                        start_date=fc_start,
-                        end_date=fc_end,
-                        allow_override=allow_fc_override,
-                        remarks=fc_remarks,
-                    )
-
-                    try:
-                        (
-                            get_supabase()
-                            .table("roster_manual_assignments")
-                            .insert(payloads)
-                            .execute()
-                        )
-                    except Exception as exc:
-                        st.error(
-                            f"Unable to lock FC continuity: {exc}"
-                        )
-                    else:
-                        clear_manual_cache()
-                        st.success(
-                            f"FC continuity locked: {fc_person}, "
-                            f"{fc_start:%d %b} → {fc_end:%d %b}."
-                        )
-                        st.rerun()
-
-            # ---------------------------------------------------------------
-            # SINGLE-DAY COVER / FC RESERVE
-            # ---------------------------------------------------------------
-            else:
-                cover_person = st.selectbox(
-                    "Cover Fit personnel",
-                    cover_fit_options,
-                    key=(
-                        f"manual_cover_person_"
-                        f"{cover_date.isoformat()}_"
-                        f"{selected_requirement_id}_"
-                        f"{assignment_mode}"
-                    ),
-                )
-
-                availability_code = get_availability_code(
-                    availability_rows,
-                    cover_person,
-                    cover_date,
-                )
-
-                if availability_code:
-                    st.warning(
-                        f"{cover_person} has availability code "
-                        f"{availability_code} on "
-                        f"{cover_date:%d %b %Y}."
-                    )
-
-                allow_cover_override = st.checkbox(
-                    "Allow manual override if validation finds a conflict",
-                    value=False,
-                    key=(
-                        "manual_cover_override_"
-                        + selected_requirement_id
-                        + "_"
-                        + assignment_mode
-                    ),
-                )
-
-                cover_remarks = st.text_input(
-                    "Remarks",
-                    key=(
-                        "manual_cover_remarks_"
-                        + selected_requirement_id
-                        + "_"
-                        + assignment_mode
-                    ),
-                )
-
-                if st.button(
-                    "Lock cover assignment",
-                    type="primary",
-                    use_container_width=True,
-                    key=(
-                        "manual_cover_lock_button_"
-                        + selected_requirement_id
-                        + "_"
-                        + assignment_mode
-                    ),
-                ):
-                    kind = (
-                        "COVER_RESERVE"
-                        if (
-                            selected_is_fc
-                            and assignment_mode == "FC reserve"
-                        )
-                        else "COVER"
-                    )
-
-                    label = (
-                        "FC RESERVE"
-                        if kind == "COVER_RESERVE"
-                        else (
-                            f"{selected_requirement.requesting_unit} — "
-                            f"{selected_requirement.cover_type}"
-                        )
-                    )
-
-                    payload = {
-                        "roster_month_id": roster_month_id,
-                        "personnel_name": cover_person,
-                        "assignment_date": cover_date.isoformat(),
-                        "assignment_kind": kind,
-                        "centre": None,
-                        "role_name": None,
-                        "cover_requirement_id": selected_requirement_id,
-                        "cover_label": label,
-                        "session": selected_requirement.session,
-                        "is_locked": True,
-                        "allow_override": allow_cover_override,
-                        "remarks": cover_remarks.strip() or None,
+            st.dataframe(
+                [
+                    {
+                        "Segment": index + 1,
+                        "Personnel": segment.person_name,
+                        "From": segment.start_date,
+                        "Until": segment.end_date,
+                        "Days": segment.day_count,
+                        "Override": segment.allow_override,
+                        "Remarks": segment.remarks or "",
                     }
+                    for index, segment in enumerate(existing_fc_segments)
+                ],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "From": st.column_config.DateColumn(
+                        "From",
+                        format="DD MMM",
+                    ),
+                    "Until": st.column_config.DateColumn(
+                        "Until",
+                        format="DD MMM",
+                    ),
+                },
+            )
 
-                    try:
+            segment_index = st.selectbox(
+                "Segment to remove",
+                options=list(range(len(existing_fc_segments))),
+                format_func=lambda index: (
+                    f"{existing_fc_segments[index].person_name}: "
+                    f"{existing_fc_segments[index].start_date:%d %b} "
+                    f"→ {existing_fc_segments[index].end_date:%d %b}"
+                ),
+                key=f"fc_segment_delete_selector_{fc_requirement.id}",
+            )
+
+            if st.button(
+                "Delete selected FC segment",
+                key=f"delete_fc_segment_{fc_requirement.id}",
+                use_container_width=True,
+            ):
+                segment = existing_fc_segments[segment_index]
+
+                try:
+                    for assignment_id in segment.assignment_ids:
                         (
                             get_supabase()
                             .table("roster_manual_assignments")
-                            .insert(payload)
+                            .delete()
+                            .eq("id", assignment_id)
                             .execute()
                         )
-                    except Exception as exc:
-                        st.error(
-                            f"Unable to save manual cover: {exc}"
-                        )
-                    else:
-                        clear_manual_cache()
-                        st.success("Cover assignment locked.")
-                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Unable to delete FC segment: {exc}")
+                else:
+                    clear_manual_cache()
+                    st.success("FC segment deleted.")
+                    st.rerun()
+
+        if uncovered_dates:
+            st.warning(
+                f"Manual FC plan still has {len(uncovered_dates)} uncovered "
+                "day(s). The generator may fill them using FC continuity."
+            )
+        else:
+            st.success("The full FC requirement is manually covered.")
+
+        st.divider()
+        st.markdown("#### Add FC segment")
+
+        segment_mode = st.radio(
+            "Duration",
+            ["Whole FC", "Custom segment"],
+            horizontal=True,
+            key=f"fc_segment_mode_{fc_requirement.id}",
+        )
+
+        if segment_mode == "Whole FC":
+            fc_start = fc_requirement.start_date
+            fc_end = fc_requirement.end_date
+            st.caption(f"{fc_start:%d %b %Y} → {fc_end:%d %b %Y}")
+        else:
+            c1, c2 = st.columns(2)
+
+            with c1:
+                fc_start = st.date_input(
+                    "Cover from",
+                    value=fc_requirement.start_date,
+                    min_value=fc_requirement.start_date,
+                    max_value=fc_requirement.end_date,
+                    format="DD/MM/YYYY",
+                    key=f"fc_segment_start_{fc_requirement.id}",
+                )
+
+            with c2:
+                fc_end = st.date_input(
+                    "Cover until",
+                    value=fc_requirement.end_date,
+                    min_value=fc_start,
+                    max_value=fc_requirement.end_date,
+                    format="DD/MM/YYYY",
+                    key=(
+                        f"fc_segment_end_{fc_requirement.id}_"
+                        f"{fc_start.isoformat()}"
+                    ),
+                )
+
+        fc_person_options = [
+            name
+            for name in personnel_available_on(
+                person_by_name,
+                fc_start,
+                cover_fit_only=True,
+            )
+            if (
+                person_by_name[name].person.leaving_date is None
+                or person_by_name[name].person.leaving_date > fc_end
+            )
+        ]
+
+        fc_person = st.selectbox(
+            "Cover Fit personnel",
+            options=fc_person_options,
+            key=(
+                f"fc_segment_person_{fc_requirement.id}_"
+                f"{fc_start.isoformat()}_{fc_end.isoformat()}"
+            ),
+            disabled=not fc_person_options,
+        )
+
+        conflict_dates = (
+            availability_conflict_dates(
+                person_name=fc_person,
+                start_date=fc_start,
+                end_date=fc_end,
+                availability_entries=availability_rows,
+            )
+            if fc_person
+            else []
+        )
+
+        capacity_dates = capacity_conflict_dates(
+            requirement=fc_requirement,
+            start_date=fc_start,
+            end_date=fc_end,
+            assignments=manual_assignments,
+        )
+
+        if conflict_dates:
+            st.warning(
+                f"{fc_person} has Availability plotted on "
+                f"{len(conflict_dates)} selected day(s): "
+                + ", ".join(
+                    current_date.strftime("%d %b")
+                    for current_date in conflict_dates
+                )
+            )
+
+        if capacity_dates:
+            st.error(
+                "The FC requirement is already fully manually assigned on: "
+                + ", ".join(
+                    current_date.strftime("%d %b")
+                    for current_date in capacity_dates
+                )
+            )
+
+        fc_override = st.checkbox(
+            "Allow manual override for Availability conflicts",
+            value=False,
+            key=(
+                f"fc_segment_override_{fc_requirement.id}_"
+                f"{fc_start.isoformat()}_{fc_end.isoformat()}"
+            ),
+        )
+
+        fc_remarks = st.text_input(
+            "Remarks",
+            placeholder="Optional handover / FC note",
+            key=f"fc_segment_remarks_{fc_requirement.id}",
+        )
+
+        if st.button(
+            "Lock FC segment",
+            type="primary",
+            use_container_width=True,
+            key=(
+                f"lock_fc_segment_{fc_requirement.id}_"
+                f"{fc_start.isoformat()}_{fc_end.isoformat()}"
+            ),
+            disabled=(
+                not fc_person_options
+                or bool(capacity_dates)
+                or (bool(conflict_dates) and not fc_override)
+            ),
+        ):
+            payloads = build_fc_segment_payloads(
+                roster_month_id=roster_month_id,
+                requirement=fc_requirement,
+                person_name=fc_person,
+                start_date=fc_start,
+                end_date=fc_end,
+                allow_override=fc_override,
+                remarks=fc_remarks,
+            )
+
+            try:
+                (
+                    get_supabase()
+                    .table("roster_manual_assignments")
+                    .insert(payloads)
+                    .execute()
+                )
+            except Exception as exc:
+                st.error(f"Unable to lock FC segment: {exc}")
+            else:
+                clear_manual_cache()
+                st.success(
+                    f"FC segment locked: {fc_person}, "
+                    f"{fc_start:%d %b} → {fc_end:%d %b}."
+                )
+                st.rerun()
 
 with interest_tab:
     st.subheader("Record PTMC overnight interest")
