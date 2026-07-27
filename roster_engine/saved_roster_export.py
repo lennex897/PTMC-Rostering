@@ -39,7 +39,7 @@ def saved_roster_to_schedule(
             cover = item.cover_type or item.assignment_kind
 
             role = (
-                f"{unit} — {cover}"
+                f"{unit} {cover}"
                 if unit
                 else cover
             )
