@@ -159,6 +159,7 @@ def _person_is_available(
         if (
             _normalise(entry.person_name) == person_name
             and entry.unavailable_date == duty_date
+            and _normalise(entry.reason) in BLOCKING_REASONS
         ):
             return False
 

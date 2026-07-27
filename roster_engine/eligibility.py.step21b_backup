@@ -43,18 +43,11 @@ def is_person_unavailable(
     duty_date: date,
     availability_entries: list[AvailabilityEntry],
 ) -> bool:
-    """
-    Any plotted availability entry blocks automatic scheduling on that date,
-    regardless of code.
-
-    Manual locked duties/covers remain the explicit override path because
-    they are applied outside automatic eligibility.
-    """
     person_name = person.name.strip().upper()
-
     return any(
         entry.person_name.strip().upper() == person_name
         and entry.unavailable_date == duty_date
+        and entry.reason.strip().upper() in BLOCKING_REASONS
         for entry in availability_entries
     )
 
