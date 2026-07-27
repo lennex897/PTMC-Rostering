@@ -1,13 +1,9 @@
 # PTMC-Rostering
 
 ## TO ADD
-- RHMC daytime rostering 
 - RHMC leave schedule
-- RHMC AMPT status
-- RHMC personnel ORD dates
 - Ability to generate/regenerate  PTMC or RHMC only(?)
-    - For consideration due to factors such as compassionate leave, sudden MA.   
-    - Regenarate on a daily/weekly basis instead(?)    - ad hoc changes will be handled manually               
+    - For consideration due to factors such as compassionate leave, sudden MA.                
 - Lower priority for plotted duties for personnel with pending AMPT pass (?)
 - Ability to input custom requirements for following month(?)
 - MUST be with respect to AMPT test date
@@ -48,7 +44,7 @@
 - Cover planning
 
 ## CURRENT STATE
-- DOES NOT plan covers(PTRH) and RHMC day duties
+- Able to plot manpower for PTRH duties and covers
 - Able to allocate manpower appropriately for mon, thurs, sun
 - Able to produce mock roster
 - Role prioritisation not the most optimal
