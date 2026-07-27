@@ -395,7 +395,7 @@ def _fc_locked_people_for_day(
         if (
             assignment.is_locked
             and not assignment.is_reserve
-            and _normalise(assignment.cover_category) == "FC"
+            and _normalise(assignment.cover_type) == "FC"
             and assignment.cover_requirement_id == requirement_id
             and assignment.duty_date == duty_date
         )
@@ -487,7 +487,7 @@ def _assign_fc_requirement(
         if (
             assignment.is_locked
             and not assignment.is_reserve
-            and _normalise(assignment.cover_category) == "FC"
+            and _normalise(assignment.cover_type) == "FC"
             and assignment.cover_requirement_id == requirement_id
         )
     }
@@ -657,7 +657,7 @@ def generate_cover_assignments(
     for slot in cover_slots:
         if (
             rules.fc_continuity_required
-            and _normalise(slot.cover_category) == "FC"
+            and _normalise(slot.cover_type) == "FC"
             and not slot.is_reserve
             and _normalise(slot.cover_type) == "FC"
             and slot.cover_requirement_id is not None

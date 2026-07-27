@@ -173,7 +173,7 @@ class CoverRepository:
                         )
                     )
 
-                if requirement.cover_type == "FC":
+                if requirement.cover_category == "FC":
                     active_fc_dates.add(
                         current_date
                     )
@@ -255,11 +255,7 @@ class CoverRepository:
             id=str(row["id"]),
             roster_month_id=str(row["roster_month_id"]),
             requesting_unit=str(row.get("requesting_unit") or "").strip(),
-            cover_category=str(
-                row.get("cover_category")
-                or row.get("cover_type")
-                or ""
-            ).upper(),
+            cover_category=str(row.get("cover_category") or "").upper(),
             cover_type=str(row.get("cover_type") or "").upper(),
             cover_type_id=cover_type_id,
             points=points,

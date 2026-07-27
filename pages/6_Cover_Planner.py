@@ -9,15 +9,6 @@ from roster_engine.cover_repository import CoverRepository
 from roster_engine.database import get_supabase
 
 
-CATEGORY_LABELS = {
-    "NON_FC": "Non-FC",
-    "FC": "FC",
-    "GX": "GX",
-    "GP": "GP",
-}
-
-CATEGORY_ORDER = ["NON_FC", "FC", "GX", "GP"]
-
 SESSION_OPTIONS = ["AM", "PM", "FULL_DAY"]
 SESSION_LABELS = {
     "AM": "AM",
@@ -219,19 +210,6 @@ active_cover_types = [
     if bool(row.get("is_active", True))
 ]
 
-cover_types_by_category: dict[str, list[dict]] = {}
-
-for row in active_cover_types:
-    category = str(
-        row.get("category") or ""
-    ).upper()
-
-    cover_types_by_category.setdefault(
-        category,
-        [],
-    ).append(row)
-
-
 cover_repository = CoverRepository(get_supabase())
 expanded_cover_slots = cover_repository.expand_daily_slots(
     stored_requirements
@@ -303,15 +281,7 @@ with add_tab:
             "Add or reactivate one in Cover Types."
         )
     else:
-        available_categories = [
-            category
-            for category in CATEGORY_ORDER
-            if cover_types_by_category.get(
-                category
-            )
-        ]
-
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
 
         with c1:
             requesting_unit = st.text_input(
@@ -320,44 +290,19 @@ with add_tab:
                 key="cover_requesting_unit",
             )
 
-        with c2:
-            category = st.selectbox(
-                "Cover category",
-                options=available_categories,
-                format_func=lambda value: (
-                    CATEGORY_LABELS.get(
-                        value,
-                        value,
-                    )
-                ),
-                key="cover_category",
-            )
-
-        category_types = (
-            cover_types_by_category[
-                category
-            ]
-        )
-
         type_by_id = {
             str(row["id"]): row
-            for row in category_types
+            for row in active_cover_types
         }
 
-        with c3:
-            selected_type_id = (
-                st.selectbox(
-                    "Cover type",
-                    options=list(type_by_id),
-                    format_func=lambda item_id: (
-                        str(
-                            type_by_id[
-                                item_id
-                            ]["cover_type"]
-                        )
-                    ),
-                    key=f"cover_type_{category}",
-                )
+        with c2:
+            selected_type_id = st.selectbox(
+                "Cover type",
+                options=list(type_by_id),
+                format_func=lambda item_id: str(
+                    type_by_id[item_id]["cover_type"]
+                ),
+                key="cover_type",
             )
 
         selected_type = type_by_id[
@@ -466,7 +411,7 @@ with add_tab:
             * int(personnel_required)
         )
 
-        if category == "FC":
+        if cover_type == "FC":
             # Mirrors CoverRepository.expand_daily_slots():
             # ceil(active FC / 2) reserves per day.
             daily_reserves = (
@@ -523,8 +468,10 @@ with add_tab:
                         .strip()
                         .upper()
                     ),
+                    # Legacy compatibility only; cover_type is now
+                    # the application source of truth.
                     "cover_category": (
-                        category
+                        cover_type
                     ),
                     "cover_type": (
                         cover_type
@@ -594,10 +541,6 @@ with planner_tab:
         rows = []
 
         for item in requirements:
-            category = str(
-                item["cover_category"]
-            )
-
             quantity = int(
                 item[
                     "personnel_required"
@@ -616,13 +559,7 @@ with planner_tab:
                             "requesting_unit"
                         ]
                     ),
-                    "Category": (
-                        CATEGORY_LABELS.get(
-                            category,
-                            category,
-                        )
-                    ),
-                    "Cover": (
+                    "Cover type": (
                         item["cover_type"]
                     ),
                     "Session": (
@@ -778,7 +715,6 @@ with daily_tab:
     for slot in preview_slots:
         key = (
             slot.requesting_unit,
-            slot.cover_category,
             slot.cover_type,
             slot.session,
             slot.points,
@@ -790,11 +726,7 @@ with daily_tab:
             grouped_daily_slots[key] = {
                 "Date": preview_date,
                 "Unit": slot.requesting_unit,
-                "Category": CATEGORY_LABELS.get(
-                    slot.cover_category,
-                    slot.cover_category,
-                ),
-                "Cover": slot.cover_type,
+                "Cover type": slot.cover_type,
                 "Session": SESSION_LABELS.get(
                     slot.session,
                     slot.session,
@@ -926,21 +858,7 @@ with types_tab:
                         )
                         or 0
                     ),
-                    "Category": (
-                        CATEGORY_LABELS.get(
-                            str(
-                                row[
-                                    "category"
-                                ]
-                            ),
-                            str(
-                                row[
-                                    "category"
-                                ]
-                            ),
-                        )
-                    ),
-                    "Cover": (
+                    "Cover type": (
                         row["cover_type"]
                     ),
                     "Points": float(
@@ -1011,29 +929,17 @@ with types_tab:
         "#### Add cover type"
     )
 
-    a1, a2, a3, a4 = (
-        st.columns(4)
+    a1, a2, a3 = (
+        st.columns(3)
     )
 
     with a1:
-        new_category = st.selectbox(
-            "Category",
-            options=CATEGORY_ORDER,
-            format_func=lambda value: (
-                CATEGORY_LABELS[value]
-            ),
-            key=(
-                "new_cover_type_category"
-            ),
-        )
-
-    with a2:
         new_name = st.text_input(
             "Cover type",
             key="new_cover_type_name",
         )
 
-    with a3:
+    with a2:
         new_points = st.number_input(
             "Points",
             min_value=0.0,
@@ -1042,7 +948,7 @@ with types_tab:
             key="new_cover_type_points",
         )
 
-    with a4:
+    with a3:
         new_session_label = (
             st.selectbox(
                 "Default session",
@@ -1088,13 +994,16 @@ with types_tab:
                 "Full day": "FULL_DAY",
             }
 
+            normalised_type = (
+                new_name
+                .strip()
+                .upper()
+            )
+
             payload = {
-                "category": new_category,
-                "cover_type": (
-                    new_name
-                    .strip()
-                    .upper()
-                ),
+                # Legacy DB column mirrors cover_type during Step 23A.
+                "category": normalised_type,
+                "cover_type": normalised_type,
                 "points": float(
                     new_points
                 ),
@@ -1125,7 +1034,7 @@ with types_tab:
             except Exception as exc:
                 st.error(
                     "Unable to add cover type. "
-                    "The same category/type may already exist.\n\n"
+                    "The same cover type may already exist.\n\n"
                     f"{exc}"
                 )
             else:
@@ -1153,7 +1062,6 @@ with types_tab:
                     type_lookup
                 ),
                 format_func=lambda item_id: (
-                    f"{CATEGORY_LABELS.get(str(type_lookup[item_id]['category']), type_lookup[item_id]['category'])} — "
                     f"{type_lookup[item_id]['cover_type']}"
                 ),
                 key=(
@@ -1168,41 +1076,11 @@ with types_tab:
             ]
         )
 
-        e1, e2, e3, e4 = (
-            st.columns(4)
+        e1, e2, e3 = (
+            st.columns(3)
         )
 
         with e1:
-            current_category = str(
-                selected_edit[
-                    "category"
-                ]
-            )
-
-            edit_category = (
-                st.selectbox(
-                    "Category",
-                    options=(
-                        CATEGORY_ORDER
-                    ),
-                    index=(
-                        CATEGORY_ORDER.index(
-                            current_category
-                        )
-                    ),
-                    format_func=lambda value: (
-                        CATEGORY_LABELS[
-                            value
-                        ]
-                    ),
-                    key=(
-                        "edit_category_"
-                        f"{selected_edit_id}"
-                    ),
-                )
-            )
-
-        with e2:
             edit_name = st.text_input(
                 "Cover type",
                 value=str(
@@ -1216,7 +1094,7 @@ with types_tab:
                 ),
             )
 
-        with e3:
+        with e2:
             edit_points = (
                 st.number_input(
                     "Points",
@@ -1260,7 +1138,7 @@ with types_tab:
             "Full day",
         ]
 
-        with e4:
+        with e3:
             edit_session_label = (
                 st.selectbox(
                     "Default session",
@@ -1343,15 +1221,15 @@ with types_tab:
                     ),
                 }
 
+                normalised_type = (
+                    edit_name
+                    .strip()
+                    .upper()
+                )
+
                 payload = {
-                    "category": (
-                        edit_category
-                    ),
-                    "cover_type": (
-                        edit_name
-                        .strip()
-                        .upper()
-                    ),
+                    "category": normalised_type,
+                    "cover_type": normalised_type,
                     "points": float(
                         edit_points
                     ),
