@@ -35,13 +35,39 @@ def saved_roster_to_schedule(
         if item.assignment_kind == "DUTY":
             role = item.role_name or "DUTY"
         else:
-            unit = (item.requesting_unit or "").strip()
-            cover = item.cover_type or item.assignment_kind
+            unit = (
+                item.requesting_unit
+                or ""
+            ).strip()
 
-            role = (
-                f"{unit} {cover}"
-                if unit
-                else cover
+            cover = (
+                item.cover_type
+                or item.assignment_kind
+            )
+
+            session = (
+                item.session
+                or "FULL_DAY"
+            ).strip().upper()
+
+            session_label = (
+                session
+                if session in {"AM", "PM"}
+                else ""
+            )
+
+            role_parts = [
+                value
+                for value in (
+                    unit,
+                    session_label,
+                    cover,
+                )
+                if value
+            ]
+
+            role = " ".join(
+                role_parts
             )
 
         export_assignments.append(
