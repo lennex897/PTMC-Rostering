@@ -25,94 +25,6 @@ def _sessions_conflict(first: str, second: str) -> bool:
     return first == second
 
 
-def cover_owner_centre(
-    requesting_unit: str,
-) -> str | None:
-    import re
-
-    unit = _normalise(
-        requesting_unit
-    )
-
-    if re.match(
-        r"^[A-W]\s+COY\b",
-        unit,
-    ):
-        return "PT"
-
-    if re.match(
-        r"^[1-7](?:ST|ND|RD|TH)?\s+COY\b",
-        unit,
-    ):
-        return "RH"
-
-    return None
-
-
-def _is_short_cover(
-    slot: DailyCoverSlot,
-) -> bool:
-    return _normalise(
-        slot.session
-    ) in {
-        "AM",
-        "PM",
-    }
-
-
-def _service_type(
-    person: Person,
-) -> str:
-    return _normalise(
-        person.service_type
-        or ""
-    )
-
-
-def _preferred_cover_candidates(
-    *,
-    candidates: list[Person],
-    slot: DailyCoverSlot,
-) -> list[Person]:
-    cbt = [
-        person
-        for person in candidates
-        if _service_type(
-            person
-        ) == "CBT"
-    ]
-
-    if cbt:
-        return cbt
-
-    legacy = [
-        person
-        for person in candidates
-        if _service_type(
-            person
-        ) not in {
-            "CBT",
-            "SVC",
-        }
-    ]
-
-    if legacy:
-        return legacy
-
-    if _is_short_cover(
-        slot
-    ):
-        return [
-            person
-            for person in candidates
-            if _service_type(
-                person
-            ) == "SVC"
-        ]
-
-    return []
-
-
 @dataclass(frozen=True)
 class CoverAssignment:
     duty_date: date
@@ -238,37 +150,18 @@ def _current_workload_points(
 def _candidate_sort_key(
     *,
     person: Person,
-    slot: DailyCoverSlot,
     historical_schedule: Schedule | None,
     locked_duties: list[Assignment],
     existing_cover_assignments: list[CoverAssignment],
-) -> tuple[int, float, str]:
-    owner = cover_owner_centre(
-        slot.requesting_unit
-    )
-
-    centre_priority = (
-        0
-        if (
-            owner is not None
-            and _normalise(
-                person.centre
-            ) == owner
-        )
-        else 1
-    )
-
+) -> tuple[float, str]:
     return (
-        centre_priority,
         _current_workload_points(
             person=person,
             historical_schedule=historical_schedule,
             locked_duties=locked_duties,
             existing_cover_assignments=existing_cover_assignments,
         ),
-        _normalise(
-            person.name
-        ),
+        _normalise(person.name),
     )
 
 
@@ -343,16 +236,10 @@ def _assign_normal_slot(
         manual_only_personnel=manual_only_personnel,
     )
 
-    candidates = _preferred_cover_candidates(
-        candidates=candidates,
-        slot=slot,
-    )
-
     candidates = sorted(
         candidates,
         key=lambda person: _candidate_sort_key(
             person=person,
-            slot=slot,
             historical_schedule=historical_schedule,
             locked_duties=locked_duties,
             existing_cover_assignments=result.assignments,
@@ -542,16 +429,10 @@ def _assign_fc_requirement(
                 else candidates
             )
 
-            pool = _preferred_cover_candidates(
-                candidates=pool,
-                slot=slot,
-            )
-
             pool = sorted(
                 pool,
                 key=lambda person: _candidate_sort_key(
                     person=person,
-                    slot=slot,
                     historical_schedule=historical_schedule,
                     locked_duties=locked_duties,
                     existing_cover_assignments=result.assignments,

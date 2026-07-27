@@ -5,11 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from roster_engine.cover_repository import DailyCoverSlot
-from roster_engine.cover_scheduler import (
-    CoverAssignment,
-    cover_owner_centre,
-    generate_cover_assignments,
-)
+from roster_engine.cover_scheduler import CoverAssignment, generate_cover_assignments
 from roster_engine.generator import (
     GenerationReport,
     GenerationSettings,
@@ -249,139 +245,27 @@ def _cover_points(
     return dict(points)
 
 
-def _normalise_generation_scope(
-    generation_scope: str,
-) -> str:
-    scope = _normalise(
-        generation_scope
-    )
-
-    aliases = {
-        "BOTH": "BOTH",
-        "BOTH CENTRES": "BOTH",
-        "PT": "PT",
-        "PT ONLY": "PT",
-        "RH": "RH",
-        "RH ONLY": "RH",
-    }
-
-    if scope not in aliases:
-        raise ValueError(
-            f"Unsupported generation scope: {generation_scope!r}."
-        )
-
-    return aliases[
-        scope
-    ]
-
-
-def _requirement_in_scope(
-    requirement: DutyRequirement,
-    scope: str,
-) -> bool:
-    return (
-        scope == "BOTH"
-        or _normalise(
-            requirement.centre
-        ) == scope
-    )
-
-
-def _cover_slot_in_scope(
-    slot: DailyCoverSlot,
-    scope: str,
-) -> bool:
-    if scope == "BOTH":
-        return True
-
-    return (
-        cover_owner_centre(
-            slot.requesting_unit
-        )
-        == scope
-    )
-
-
 def generate_roster_from_planning(
     *,
     planning: PlanningContext,
     settings: GenerationSettings,
     historical_schedule: Schedule | None = None,
     role_priorities: tuple[RolePriority, ...] | None = None,
-    generation_scope: str = "BOTH",
 ) -> PlanningGenerationResult:
     rules = planning.roster_rules
 
-    scope = _normalise_generation_scope(
-        generation_scope
-    )
-
-    all_requirements = generate_month_requirements(
+    requirements = generate_month_requirements(
         year=settings.year,
         month=settings.month,
         settings=settings.requirement_settings,
         rules=rules,
     )
 
-    requirements = [
-        requirement
-        for requirement in all_requirements
-        if _requirement_in_scope(
-            requirement,
-            scope,
-        )
-    ]
-
     manual_duties, manual_reserves, manual_covers = (
         _split_locked_manual_assignments(
             planning.manual_assignments
         )
     )
-
-    if scope != "BOTH":
-        manual_duties = [
-            assignment
-            for assignment in manual_duties
-            if _normalise(
-                assignment.centre
-                or ""
-            ) == scope
-        ]
-
-        manual_reserves = [
-            assignment
-            for assignment in manual_reserves
-            if _normalise(
-                assignment.centre
-                or ""
-            ) == scope
-        ]
-
-    scoped_cover_slots = [
-        slot
-        for slot in planning.cover_slots
-        if _cover_slot_in_scope(
-            slot,
-            scope,
-        )
-    ]
-
-    scoped_requirement_ids = {
-        slot.cover_requirement_id
-        for slot in scoped_cover_slots
-        if slot.cover_requirement_id
-        is not None
-    }
-
-    if scope != "BOTH":
-        manual_covers = [
-            assignment
-            for assignment in manual_covers
-            if (
-                assignment.cover_requirement_id
-                in scoped_requirement_ids
-            )
-        ]
 
     locked_duties, remaining_requirements = _apply_locked_duties(
         requirements=requirements,
@@ -393,7 +277,7 @@ def generate_roster_from_planning(
     )
 
     locked_covers, remaining_cover_slots = _apply_locked_covers(
-        cover_slots=scoped_cover_slots,
+        cover_slots=planning.cover_slots,
         manual_covers=manual_covers,
     )
 

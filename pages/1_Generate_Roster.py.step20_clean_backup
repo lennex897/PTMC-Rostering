@@ -452,31 +452,6 @@ st.info(
 )
 
 
-generation_scope_label = st.radio(
-    "Generation scope",
-    options=[
-        "Both centres",
-        "PT only",
-        "RH only",
-    ],
-    horizontal=True,
-    help=(
-        "PT only generates PT duties and A-W COY covers. "
-        "RH only generates RH duties and 1ST-7TH COY covers."
-    ),
-)
-
-generation_scope = {
-    "Both centres": "BOTH",
-    "PT only": "PT",
-    "RH only": "RH",
-}[generation_scope_label]
-
-st.caption(
-    "Cover priority: CBT first; correct-centre CBT preferred. "
-    "SVC is used only for AM/PM short covers when CBT cannot fill the slot."
-)
-
 if st.button(
     "Generate roster",
     type="primary",
@@ -490,7 +465,6 @@ if st.button(
                 year=selected_month.year,
                 month=selected_month.month,
             ),
-            generation_scope=generation_scope,
         )
     except Exception as exc:
         st.error(
