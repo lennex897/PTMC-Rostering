@@ -156,6 +156,69 @@ def last_overnight_before(
     )
 
 
+def overnight_assignments_near_date(
+    person: Person,
+    duty_date: date,
+    schedule: Schedule,
+    *,
+    minimum_break_days: int,
+):
+    """
+    Return existing overnight assignments that violate the required break
+    window around duty_date.
+
+    The check is bidirectional so future locked duties protect the preceding
+    break day(s) as well as generated duties protecting subsequent days.
+    """
+    required_date_gap = max(
+        0,
+        minimum_break_days,
+    ) + 1
+
+    return [
+        assignment
+        for assignment in overnight_assignments(
+            person,
+            schedule,
+        )
+        if (
+            assignment.duty_date != duty_date
+            and abs(
+                (
+                    assignment.duty_date
+                    - duty_date
+                ).days
+            )
+            < required_date_gap
+        )
+    ]
+
+
+def nearest_overnight_distance(
+    person: Person,
+    duty_date: date,
+    schedule: Schedule,
+) -> int | None:
+    distances = [
+        abs(
+            (
+                assignment.duty_date
+                - duty_date
+            ).days
+        )
+        for assignment in overnight_assignments(
+            person,
+            schedule,
+        )
+        if assignment.duty_date != duty_date
+    ]
+
+    if not distances:
+        return None
+
+    return min(distances)
+
+
 def apply_role_priorities(
     result: CandidateScore,
     context: ScoringContext,
@@ -237,12 +300,43 @@ def score_candidate(
         + external_points
     )
 
+    # Determine the progressively reduced workload target for personnel who
+    # are approaching their leaving date.
+    workload_target_fraction = 1.0
+    days_until_leaving: int | None = None
+    reduction_window = max(
+        0,
+        context.leaving_reduction_days,
+    )
+
+    if person.leaving_date is not None:
+        days_until_leaving = (
+            person.leaving_date
+            - context.duty_date
+        ).days
+
+        if (
+            reduction_window > 0
+            and 0 < days_until_leaving <= reduction_window
+        ):
+            workload_target_fraction = max(
+                days_until_leaving
+                / reduction_window,
+                0.05,
+            )
+
+    # Existing workload counts progressively heavier as departure approaches.
+    effective_points = (
+        current_points
+        / workload_target_fraction
+    )
+
     result.add(
         description=(
             f"Current total workload points: "
             f"{current_points:g}"
         ),
-        value=-10.0 * current_points,
+        value=-10.0 * effective_points,
     )
 
     selected_departments = {
@@ -278,48 +372,63 @@ def score_candidate(
     )
 
     if overnight_duty:
-        previous_overnight = last_overnight_before(
-            person=person,
-            duty_date=context.duty_date,
-            schedule=context.schedule,
+        nearby_overnights = (
+            overnight_assignments_near_date(
+                person=person,
+                duty_date=context.duty_date,
+                schedule=context.schedule,
+                minimum_break_days=(
+                    context.overnight_min_break_days
+                ),
+            )
         )
 
-        if previous_overnight is None:
-            result.add(
-                description=(
-                    "No previous overnight duty "
-                    "in current schedule"
+        if nearby_overnights:
+            nearest_date = min(
+                (
+                    assignment.duty_date
+                    for assignment
+                    in nearby_overnights
                 ),
-                value=10.0,
+                key=lambda existing_date: abs(
+                    (
+                        existing_date
+                        - context.duty_date
+                    ).days
+                ),
+            )
+
+            result.block(
+                "Day break between overnight duties not met: "
+                f"requires {context.overnight_min_break_days} "
+                "full day(s); existing overnight on "
+                f"{nearest_date.isoformat()}"
             )
         else:
-            days_since_previous = (
-                context.duty_date
-                - previous_overnight.duty_date
-            ).days
-
-            minimum_gap = (
-                context.overnight_min_break_days
-                + 1
+            nearest_distance = nearest_overnight_distance(
+                person=person,
+                duty_date=context.duty_date,
+                schedule=context.schedule,
             )
 
-            if days_since_previous < minimum_gap:
-                result.block(
-                    "Day break between overnight duties not met: "
-                    f"requires {context.overnight_min_break_days} "
-                    "full day(s)"
-                )
-            else:
-                spacing_bonus = min(
-                    float(days_since_previous),
-                    10.0,
-                )
+            if nearest_distance is None:
                 result.add(
                     description=(
-                        f"{days_since_previous} days "
-                        "since previous overnight duty"
+                        "No previous overnight duty "
+                        "in current schedule"
                     ),
-                    value=spacing_bonus,
+                    value=10.0,
+                )
+            else:
+                result.add(
+                    description=(
+                        f"{nearest_distance} days "
+                        "from nearest overnight duty"
+                    ),
+                    value=min(
+                        float(nearest_distance),
+                        10.0,
+                    ),
                 )
 
         weekly_overnights = sum(
@@ -349,34 +458,30 @@ def score_candidate(
                 value=-5.0 * weekly_overnights,
             )
 
-    if person.leaving_date is not None:
-        days_until_leaving = (
-            person.leaving_date
-            - context.duty_date
-        ).days
-
-        reduction_window = max(
-            0,
-            context.leaving_reduction_days,
+    if (
+        days_until_leaving is not None
+        and reduction_window > 0
+        and 0 < days_until_leaving <= reduction_window
+    ):
+        # Explicit penalty ensures the leaving rule still has an effect when
+        # the person's current workload is zero.
+        reduction_progress = (
+            1.0
+            - workload_target_fraction
         )
 
-        if (
-            reduction_window > 0
-            and 0 < days_until_leaving <= reduction_window
-        ):
-            departure_penalty = (
-                reduction_window
-                + 1
-                - days_until_leaving
-            ) / 5
+        departure_penalty = (
+            25.0
+            * reduction_progress
+        )
 
-            result.add(
-                description=(
-                    f"Leaving unit in "
-                    f"{days_until_leaving} days"
-                ),
-                value=-departure_penalty,
-            )
+        result.add(
+            description=(
+                f"Leaving unit in "
+                f"{days_until_leaving} days"
+            ),
+            value=-departure_penalty,
+        )
 
     apply_duty_interest(
         result=result,
