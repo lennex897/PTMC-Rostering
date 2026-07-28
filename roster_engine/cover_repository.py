@@ -15,6 +15,16 @@ COVER_REQUIREMENTS_TABLE = "roster_cover_requirements"
 def classify_cover_category(
     cover_type: str | None,
 ) -> str:
+    """
+    Derive the internal scheduler category from the user-facing Cover Type.
+
+    $FC is the actual FC cover type used by the Cover Planner, but internally
+    it belongs to the FC category so that FC continuity, reserves, swaps, and
+    manual FC handling are applied.
+
+    GP and GX retain their own categories. All other cover types are treated
+    as NON_FC.
+    """
     value = " ".join(
         str(cover_type or "")
         .strip()
@@ -22,8 +32,17 @@ def classify_cover_category(
         .split()
     )
 
-    if value in {"FC", "GP", "GX"}:
-        return value
+    if value in {
+        "FC",
+        "$FC",
+    }:
+        return "FC"
+
+    if value == "GP":
+        return "GP"
+
+    if value == "GX":
+        return "GX"
 
     return "NON_FC"
 
