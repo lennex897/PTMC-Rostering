@@ -1871,9 +1871,6 @@ with validation_tab:
                             for record
                             in personnel_records
                         ],
-                        availability_entries=(
-                            availability_entries
-                        ),
                     )
 
                     st.session_state[

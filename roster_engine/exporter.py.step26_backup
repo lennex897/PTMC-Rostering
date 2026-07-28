@@ -7,12 +7,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 
-from roster_engine.models import (
-    Assignment,
-    AvailabilityEntry,
-    Person,
-    Schedule,
-)
+from roster_engine.models import Assignment, Person, Schedule
 from roster_engine.personnel import normalise_text
 from roster_engine.roster_grid import (
     DATE_ROW,
@@ -653,7 +648,6 @@ def export_schedule(
     year: int,
     month: int,
     personnel: list[Person] | None = None,
-    availability_entries: list[AvailabilityEntry] | None = None,
     worksheet_name: str | None = None,
 ) -> Path:
     """
@@ -807,78 +801,6 @@ def export_schedule(
             target_cell.value = new_value
 
             written_assignments += 1
-
-        # Plot availability into otherwise blank cells. Assignments are
-        # deliberately written first, so manual/generated duties and covers
-        # override availability display.
-        availability_by_cell: dict[
-            tuple[str, date],
-            list[str],
-        ] = {}
-
-        for entry in availability_entries or []:
-            if (
-                entry.unavailable_date.year != year
-                or entry.unavailable_date.month != month
-            ):
-                continue
-
-            person_key = canonical_person_name(
-                entry.person_name
-            )
-            code = str(
-                entry.reason or ""
-            ).strip()
-
-            if not person_key or not code:
-                continue
-
-            key = (
-                person_key,
-                entry.unavailable_date,
-            )
-            codes = availability_by_cell.setdefault(
-                key,
-                [],
-            )
-
-            if code.upper() not in {
-                existing.upper()
-                for existing in codes
-            }:
-                codes.append(code)
-
-        for (
-            person_key,
-            availability_date,
-        ), codes in availability_by_cell.items():
-            row_number = personnel_rows.get(
-                person_key
-            )
-            column_number = date_columns.get(
-                availability_date
-            )
-
-            if (
-                row_number is None
-                or column_number is None
-            ):
-                continue
-
-            target_cell = worksheet.cell(
-                row=row_number,
-                column=column_number,
-            )
-
-            if target_cell.value not in (
-                None,
-                "",
-            ):
-                continue
-
-            target_cell.value = " + ".join(
-                codes
-            )
 
         if missing_people:
             missing_names = ", ".join(
