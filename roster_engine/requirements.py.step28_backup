@@ -178,27 +178,7 @@ def requirements_for_date(
     )
 
     if settings.include_pt_core_roles:
-        # Mon / Thu / Sun use the CS/B staffing pattern.
-        #
-        # On those days PT CS2 and PT SB1 are intentionally omitted because
-        # PT CS/B replaces that part of the overnight team. The separate
-        # include_pt_csb block below then adds PT CS/B.
-        if weekday in pt_csb_days:
-            pt_core_roles = (
-                "PT DM",
-                "PT CS1",
-                "PT AE",
-            )
-        else:
-            pt_core_roles = (
-                "PT DM",
-                "PT CS1",
-                "PT CS2",
-                "PT SB1",
-                "PT AE",
-            )
-
-        for role in pt_core_roles:
+        for role in PT_CORE_OVERNIGHT_ROLES:
             requirements.append(
                 DutyRequirement(
                     duty_date=duty_date,
