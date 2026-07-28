@@ -28,7 +28,7 @@ def normalise(value: str | None) -> str:
 
 
 def is_active_fc_requirement(requirement: CoverRequirement) -> bool:
-    return normalise(requirement.cover_category) == "FC"
+    return normalise(requirement.cover_type) == "FC"
 
 
 def inclusive_dates(start_date: date, end_date: date) -> list[date]:

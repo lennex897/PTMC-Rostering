@@ -12,22 +12,6 @@ COVER_TYPES_TABLE = "roster_cover_types"
 COVER_REQUIREMENTS_TABLE = "roster_cover_requirements"
 
 
-def classify_cover_category(
-    cover_type: str | None,
-) -> str:
-    value = " ".join(
-        str(cover_type or "")
-        .strip()
-        .upper()
-        .split()
-    )
-
-    if value in {"FC", "GP", "GX"}:
-        return value
-
-    return "NON_FC"
-
-
 @dataclass(frozen=True)
 class CoverType:
     id: str
@@ -189,7 +173,7 @@ class CoverRepository:
                         )
                     )
 
-                if requirement.cover_category == "FC":
+                if requirement.cover_type == "FC":
                     active_fc_dates.add(
                         current_date
                     )
@@ -231,9 +215,7 @@ class CoverRepository:
     def _row_to_cover_type(row: dict) -> CoverType:
         return CoverType(
             id=str(row["id"]),
-            category=classify_cover_category(
-                str(row.get("cover_type") or "")
-            ),
+            category=str(row.get("category") or "").upper(),
             cover_type=str(row.get("cover_type") or "").upper(),
             points=float(row.get("points") or 0.0),
             default_session=(
@@ -273,9 +255,11 @@ class CoverRepository:
             id=str(row["id"]),
             roster_month_id=str(row["roster_month_id"]),
             requesting_unit=str(row.get("requesting_unit") or "").strip(),
-            cover_category=classify_cover_category(
-                str(row.get("cover_type") or "")
-            ),
+            cover_category=str(
+                row.get("cover_category")
+                or row.get("cover_type")
+                or ""
+            ).upper(),
             cover_type=str(row.get("cover_type") or "").upper(),
             cover_type_id=cover_type_id,
             points=points,

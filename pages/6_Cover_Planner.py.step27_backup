@@ -5,10 +5,7 @@ from datetime import date
 
 import streamlit as st
 
-from roster_engine.cover_repository import (
-    CoverRepository,
-    classify_cover_category,
-)
+from roster_engine.cover_repository import CoverRepository
 from roster_engine.database import get_supabase
 
 
@@ -34,9 +31,18 @@ st.caption(
 def legacy_category_for_type(
     cover_type: str,
 ) -> str:
-    return classify_cover_category(
-        cover_type
+    value = " ".join(
+        cover_type.strip().upper().split()
     )
+
+    if value in {
+        "FC",
+        "GP",
+        "GX",
+    }:
+        return value
+
+    return "NON_FC"
 
 def month_start(value: date) -> date:
     return value.replace(day=1)
@@ -480,7 +486,7 @@ with add_tab:
                     # Legacy compatibility only; cover_type is now
                     # the application source of truth.
                    "cover_category": (
-                        classify_cover_category(
+                        legacy_category_for_type(
                             cover_type
                         )
                     ),
@@ -991,7 +997,7 @@ with planner_tab:
                         .upper()
                     ),
                     "cover_category": (
-                        classify_cover_category(
+                        legacy_category_for_type(
                             edit_cover_type
                         )
                     ),
@@ -1431,7 +1437,7 @@ with types_tab:
 
             payload = {
                 # Compatibility with the legacy Supabase category constraint.
-                "category": classify_cover_category(
+                "category": legacy_category_for_type(
                     normalised_type
                 ),
                 "cover_type": normalised_type,
